@@ -1,0 +1,21 @@
+[package]
+name = "rmp-client"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "RMP client library."
+
+[dependencies]
+rmp-proto.workspace = true
+rmp-crypto.workspace = true
+quinn = { version = "0.11", default-features = false, features = ["runtime-tokio", "rustls-aws-lc-rs", "log"] }
+rustls.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+thiserror.workspace = true
+anyhow.workspace = true
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"

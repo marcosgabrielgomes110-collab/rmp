@@ -1,0 +1,12 @@
+[package]
+name = "rmp-dirs"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "RMP filesystem layout (XDG user dirs and system-wide dirs)."
+
+[dependencies]
+anyhow.workspace = true
+directories.workspace = true

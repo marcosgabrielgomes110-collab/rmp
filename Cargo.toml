@@ -1,0 +1,52 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/rmp-proto",
+    "crates/rmp-dirs",
+    "crates/rmp-crypto",
+    "crates/rmp-server",
+    "crates/rmp-client",
+    "crates/rmp-cli",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.75"
+license = "MIT"
+repository = "https://github.com/marcosgabrielgomes110-collab/rmp"
+homepage = "https://github.com/marcosgabrielgomes110-collab/rmp"
+
+[workspace.dependencies]
+rmp-proto = { path = "crates/rmp-proto" }
+rmp-dirs = { path = "crates/rmp-dirs" }
+rmp-crypto = { path = "crates/rmp-crypto" }
+rmp-server = { path = "crates/rmp-server" }
+rmp-client = { path = "crates/rmp-client" }
+
+serde = { version = "1", features = ["derive"] }
+postcard = { version = "1", features = ["alloc"] }
+thiserror = "1"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "io-util", "io-std", "sync", "time", "signal", "process"] }
+quinn = "0.11"
+rustls = "0.23"
+rcgen = "0.14"
+sha2 = "0.10"
+hex = "0.4"
+zeroize = { version = "1", features = ["derive"] }
+argon2 = "0.5"
+rand = "0.8"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+tracing-appender = "0.2"
+clap = { version = "4", features = ["derive"] }
+anyhow = "1"
+portable-pty = "0.8"
+directories = "5"
+toml = "0.8"
+
+[profile.release]
+lto = true
+codegen-units = 1
+panic = "abort"
+strip = true

@@ -1,0 +1,25 @@
+[package]
+name = "rmp-crypto"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "RMP cryptography: host keys, TLS 1.3 + PQC and password authentication."
+
+[dependencies]
+rmp-proto.workspace = true
+rmp-dirs.workspace = true
+rcgen.workspace = true
+rustls.workspace = true
+sha2.workspace = true
+hex.workspace = true
+zeroize.workspace = true
+argon2.workspace = true
+rand.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+opaque-ke = { version = "4", features = ["argon2", "std"] }
+
+[dev-dependencies]
+tempfile = "3"

@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Report a security vulnerability
+    url: https://github.com/marcosgabrielgomes110-collab/rmp/security/advisories/new
+    about: Please report vulnerabilities privately, not as a public issue.
+  - name: Questions and discussions
+    url: https://github.com/marcosgabrielgomes110-collab/rmp/discussions
+    about: Ask questions and discuss ideas with the community.

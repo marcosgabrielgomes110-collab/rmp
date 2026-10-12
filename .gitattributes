@@ -1,0 +1,17 @@
+# Normalize text files to LF (the repo is developed on Linux, built anywhere).
+* text=auto eol=lf
+
+*.rs      text eol=lf
+*.toml    text eol=lf
+*.yml     text eol=lf
+*.yaml    text eol=lf
+*.md      text eol=lf
+Makefile  text eol=lf
+
+# Binary-ish
+*.png binary
+*.gz  binary
+*.tar binary
+
+# Generated / noise for GitHub linguist
+Cargo.lock linguist-generated=true

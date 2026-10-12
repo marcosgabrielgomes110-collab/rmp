@@ -1,0 +1,63 @@
+# ─────────────────────────────────────────────────────────────────────────
+# RMP — Remote Machine Protocol · configuration
+#
+# Read by `rmp serve` (server/auth/security/logging) and `rmp connect` (client).
+# Every option has a safe default; comment or delete a line to use it.
+# ─────────────────────────────────────────────────────────────────────────
+
+[server]
+# Enable the daemon. false → `rmp serve` refuses to start.
+enabled = true
+# Address and UDP port to listen on.
+listen = "0.0.0.0:2222"
+# Account name accepted for remote access.
+username = "alice"
+# Login shell. "" = $SHELL, or /bin/sh (Linux) / cmd.exe (Windows).
+shell = ""
+# Message shown at the start of every session. "" = none.
+motd = ""
+# Maximum number of simultaneous sessions.
+max_sessions = 8
+
+[auth]
+# Master switch for password authentication. false → nobody can log in.
+password_enabled = true
+# Allow logging in as `root`. Requires the server to run as root (systemd).
+# Set the root password with `rmp passwd --root` (or `rmp init --root`).
+allow_root = false
+# Failed attempts before a temporary lockout (per source IP).
+max_auth_attempts = 5
+# Lockout duration, in seconds.
+lockout_secs = 30
+
+[security]
+# Addresses allowed to connect (CIDR). Empty list = any address.
+allowed_cidrs = ["0.0.0.0/0", "::/0"]
+# Addresses explicitly refused; takes precedence over allowed_cidrs.
+denied_cidrs = []
+# Drop idle connections after this many seconds.
+idle_timeout_secs = 600
+# QUIC keep-alive interval, in seconds.
+keep_alive_secs = 15
+
+[logging]
+# Write rmp.log and audit.log in the state directory.
+enabled = true
+# Default log level: trace | debug | info | warn | error (RUST_LOG overrides).
+level = "info"
+# Maintain a dedicated audit.log with security events.
+audit = true
+# Record executed commands in the audit log.
+log_commands = true
+# Override the log directory ("" = state directory).
+log_dir = ""
+
+[client]
+# Enforce host key pinning (never set to false in production).
+strict_host_key = true
+# Trust unseen hosts without prompting.
+accept_new_hosts = false
+# Timeout for establishing a connection, in seconds.
+connect_timeout_secs = 10
+# Default session idle timeout, in seconds.
+idle_timeout_secs = 600

@@ -1,0 +1,39 @@
+name: Feature request
+description: Suggest an idea or improvement for RMP
+title: "[feature] "
+labels: ["enhancement", "triage"]
+body:
+  - type: checkboxes
+    id: preflight
+    attributes:
+      label: Preflight
+      options:
+        - label: I searched existing issues and discussions.
+          required: true
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem
+      description: What problem are you trying to solve? Why is the current behavior insufficient?
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed solution
+      description: Describe what you would like to happen.
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+    validations:
+      required: false
+  - type: textarea
+    id: security
+    attributes:
+      label: Security implications
+      description: Could this affect the threat model? (crypto, auth, sessions, logging)
+    validations:
+      required: false

@@ -1,0 +1,23 @@
+# Build artifacts
+/target
+/dist
+
+# Rust
+**/*.rs.bk
+*.pdb
+
+# Local RMP state (never commit keys, hashes or trust data)
+config.toml
+known_hosts
+*.log
+state/
+
+# Editors / IDEs
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# OS noise
+.DS_Store
+Thumbs.db

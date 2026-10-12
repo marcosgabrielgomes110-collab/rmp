@@ -1,0 +1,17 @@
+//! # rmp-server
+//!
+//! QUIC listener, password authentication (OPAQUE) and PTY/exec session
+//! handling for RMP.
+
+#![forbid(unsafe_code)]
+
+pub mod auth;
+pub mod net;
+pub mod server;
+pub mod session;
+
+mod audit;
+
+pub use auth::Principal;
+pub use net::Cidr;
+pub use server::{bind, quic_server_config, serve, ServerOptions};

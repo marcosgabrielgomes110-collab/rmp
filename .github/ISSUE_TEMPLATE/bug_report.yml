@@ -1,0 +1,74 @@
+name: Bug report
+description: Report a reproducible problem with RMP
+title: "[bug] "
+labels: ["bug", "triage"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for the report! Please **do not** use this form for security
+        vulnerabilities — see [SECURITY.md](https://github.com/marcosgabrielgomes110-collab/rmp/blob/main/SECURITY.md).
+  - type: checkboxes
+    id: preflight
+    attributes:
+      label: Preflight
+      options:
+        - label: I searched existing issues and this is not a duplicate.
+          required: true
+        - label: This is not a security vulnerability (those go through SECURITY.md).
+          required: true
+  - type: input
+    id: version
+    attributes:
+      label: RMP version
+      description: Output of `rmp --version`, or the commit hash.
+      placeholder: "rmp 0.1.0"
+    validations:
+      required: true
+  - type: dropdown
+    id: role
+    attributes:
+      label: Component
+      multiple: true
+      options:
+        - rmp-server
+        - rmp-client / rmp connect
+        - rmp-cli (init/serve/passwd)
+        - rmp-proto
+        - rmp-crypto
+        - build / packaging
+    validations:
+      required: true
+  - type: input
+    id: os
+    attributes:
+      label: OS / platform
+      placeholder: "Arch Linux x86_64, kernel 7.2"
+    validations:
+      required: true
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened?
+      description: Include the observed behavior and the expected behavior.
+    validations:
+      required: true
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: Steps to reproduce
+      placeholder: |
+        1. rmp init --user alice
+        2. rmp serve
+        3. rmp connect alice@host
+        4. ...
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs / output
+      description: Relevant lines from the console or `rmp.log`. Remove any secrets.
+      render: shell
+    validations:
+      required: false

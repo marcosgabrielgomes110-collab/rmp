@@ -1,0 +1,10 @@
+# CODEOWNERS — https://docs.github.com/en/repositories/managing-your-repositorys-settings-and-features/customizing-your-repository/about-code-owners
+
+# Default owner for everything in the repository.
+* @marcosgabrielgomes110-collab
+
+# Security-sensitive code requires a careful review.
+/crates/rmp-crypto/   @marcosgabrielgomes110-collab
+/crates/rmp-server/src/auth.rs @marcosgabrielgomes110-collab
+/SECURITY.md          @marcosgabrielgomes110-collab
+/.github/             @marcosgabrielgomes110-collab

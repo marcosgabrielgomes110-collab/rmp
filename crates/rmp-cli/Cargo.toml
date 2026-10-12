@@ -1,0 +1,29 @@
+[package]
+name = "rmp-cli"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "RMP command-line interface: init, serve and connect."
+
+[[bin]]
+name = "rmp"
+path = "src/main.rs"
+
+[dependencies]
+rmp-proto.workspace = true
+rmp-dirs.workspace = true
+rmp-crypto.workspace = true
+rmp-server.workspace = true
+rmp-client.workspace = true
+tokio.workspace = true
+clap.workspace = true
+anyhow.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+tracing-appender.workspace = true
+directories.workspace = true
+toml.workspace = true
+serde.workspace = true
+rpassword = "7"
