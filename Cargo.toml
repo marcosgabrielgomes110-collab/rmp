@@ -43,7 +43,7 @@ clap = { version = "4", features = ["derive"] }
 anyhow = "1"
 portable-pty = "0.8"
 directories = "5"
-toml = "0.8"
+toml = "1.1"
 
 [profile.release]
 lto = true
