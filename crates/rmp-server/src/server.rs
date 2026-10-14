@@ -8,6 +8,7 @@ use anyhow::{Context, Result};
 use rmp_crypto::{self as crypto, HostKey};
 use rmp_proto::Message;
 use std::net::SocketAddr;
+use std::path::PathBuf;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
@@ -29,6 +30,12 @@ pub struct ServerOptions {
     pub allow_root: bool,
     /// Master switch for password authentication.
     pub password_enabled: bool,
+    /// Allow device-key (public-key) authentication.
+    pub allow_key_auth: bool,
+    /// Allow enrolling a device key after a successful password login.
+    pub allow_key_enrollment: bool,
+    /// Path to the `authorized_keys` file.
+    pub authorized_keys_path: PathBuf,
     /// Failed attempts allowed before a temporary lockout.
     pub max_auth_attempts: u32,
     /// Lockout duration after too many failures.
@@ -81,6 +88,9 @@ impl ServerOptions {
             root_password_file: None,
             allow_root: false,
             password_enabled: true,
+            allow_key_auth: true,
+            allow_key_enrollment: true,
+            authorized_keys_path: PathBuf::new(),
             max_auth_attempts: 5,
             lockout: Duration::from_secs(30),
             idle_timeout: Duration::from_secs(600),
@@ -293,8 +303,8 @@ async fn handle_connection(
     rmp_proto::write_message(&mut send, &ack).await?;
 
     // Authentication.
-    let principal = auth::authenticate(&mut send, &mut recv, &opts, &limiter, peer).await?;
-    let Some(principal) = principal else {
+    let authed = auth::authenticate(&mut send, &mut recv, &opts, &limiter, peer).await?;
+    let Some(authed) = authed else {
         let _ = conn.closed().await;
         return Ok(());
     };
@@ -322,7 +332,7 @@ async fn handle_connection(
         .await
         .context("reading session request")?;
 
-    let (program, args) = opts.spawn_for(principal);
+    let (program, args) = opts.spawn_for(authed.principal);
 
     match first {
         Message::PtyRequest(req) => {
@@ -330,7 +340,7 @@ async fn handle_connection(
                 event = "session.open",
                 peer = %peer,
                 kind = "pty",
-                as_root = matches!(principal, Principal::Root),
+                as_root = matches!(authed.principal, Principal::Root),
                 term = %req.term,
                 cols = req.cols,
                 rows = req.rows
@@ -356,7 +366,7 @@ async fn handle_connection(
                 event = "session.open",
                 peer = %peer,
                 kind = "exec",
-                as_root = matches!(principal, Principal::Root),
+                as_root = matches!(authed.principal, Principal::Root),
                 command = %logged
             );
             let code =

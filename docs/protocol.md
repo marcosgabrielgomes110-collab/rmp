@@ -59,22 +59,40 @@ tipo **obrigatório** causam erro; em um tipo **extensível**, são ignorados.
 Capabilities iniciais: `PTY(0)`, `EXEC(1)`, `SIGNALS(2)`, `ENROLL_KEY(3)`,
 `RESUME_0RTT(4)`.
 
-### 4.2 Autenticação (OPAQUE, RFC 9807)
+### 4.2 Autenticação
 
-A troca roda dentro do control channel, sobre transporte já cifrado.
+A troca roda dentro do control channel, sobre transporte já cifrado. Há dois métodos: o
+**bootstrap por senha (OPAQUE)** e o **login por chave de dispositivo**.
+
+**Senha / OPAQUE (RFC 9807)**
 
 | Código | Mensagem | Direção | Campos |
 |---|---|---|---|
 | `0x10` | `AuthStart` | C→S | `username`, `initial: bytes` (mensagem OPAQUE) |
 | `0x11` | `AuthResponse` | S→C | `payload: bytes` (mensagem OPAQUE) |
 | `0x12` | `AuthFinish` | C→S | `payload: bytes`, `device_pubkey?: bytes` |
-| `0x13` | `AuthResult` | S→C | `ok: bool`, `reason: AuthReason`, `session_token?` |
+| `0x13` | `AuthResult` | S→C | `ok: bool`, `reason: AuthReason`, `session_token?`, `key_enrolled: bool` |
 
 `AuthReason`: `INVALID_CREDENTIALS`, `LOCKED_OUT`, `RATE_LIMITED`, `KEY_ENROLLED`,
 `BANNER`.
 
-> A senha **nunca** aparece em nenhuma mensagem. `device_pubkey` é enviado apenas no
-> enrollment opcional.
+> A senha **nunca** aparece em nenhuma mensagem. Se `device_pubkey` (chave pública
+> Ed25519, 32 bytes) vier preenchido, o servidor registra a chave em `authorized_keys`
+> após o sucesso e responde com `key_enrolled = true`.
+
+**Chave de dispositivo (login sem senha)**
+
+| Código | Mensagem | Direção | Campos |
+|---|---|---|---|
+| `0x14` | `KeyAuthRequest` | C→S | `username`, `public_key: bytes` (32) |
+| `0x15` | `KeyAuthChallenge` | S→C | `nonce: bytes` (32) |
+| `0x16` | `KeyAuthProof` | C→S | `signature: bytes` (64) |
+| `0x13` | `AuthResult` | S→C | `ok`, `reason`, `key_enrolled` |
+
+A assinatura cobre [`key_auth_context`] = `"rmp-keyauth-v1" ‖ len(user) ‖ user ‖ len(pk) ‖ pk
+‖ len(nonce) ‖ nonce`, ligando-a ao usuário, à chave e a um nonce novo do servidor
+(resistente a replay). Desafio é enviado **sempre** (mesmo para chave desconhecida), para
+não vazar a existência de chaves.
 
 ### 4.3 Controle de canais
 

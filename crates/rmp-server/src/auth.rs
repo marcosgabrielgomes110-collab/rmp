@@ -1,11 +1,17 @@
-//! Authentication policy and the OPAQUE handshake over the control stream.
+//! Authentication policy and the OPAQUE / device-key handshakes over the
+//! control stream.
 
 use crate::audit::audit;
+use crate::keys::AuthorizedKeys;
 use crate::server::ServerOptions;
 use anyhow::Result;
 use quinn::{RecvStream, SendStream};
-use rmp_crypto as crypto;
-use rmp_proto::{AuthFinish, AuthReason, AuthResult, AuthStart, Message};
+use rand::RngCore;
+use rmp_crypto::{self as crypto, verify_device_signature};
+use rmp_proto::{
+    key_auth_context, AuthFinish, AuthReason, AuthResult, AuthStart, KeyAuthChallenge,
+    KeyAuthProof, KeyAuthRequest, Message,
+};
 use std::collections::HashMap;
 use std::net::{IpAddr, SocketAddr};
 use std::sync::Mutex;
@@ -18,6 +24,13 @@ pub enum Principal {
     User,
     /// The `root` account (only when `auth.allow_root` is enabled).
     Root,
+}
+
+/// A successfully authenticated account.
+#[derive(Debug, Clone)]
+pub struct Authed {
+    pub username: String,
+    pub principal: Principal,
 }
 
 /// In-memory, per-IP failed-authentication tracker with temporary lockout.
@@ -78,37 +91,55 @@ impl AuthLimiter {
 
 /// Run the authentication exchange.
 ///
-/// Returns `Ok(Some(principal))` on success, `Ok(None)` when authentication
-/// fails (the failure is already reported on the control stream).
+/// Returns `Ok(Some(authed))` on success, `Ok(None)` when authentication fails
+/// (the failure is already reported on the control stream).
 pub async fn authenticate(
     send: &mut SendStream,
     recv: &mut RecvStream,
     opts: &ServerOptions,
     limiter: &AuthLimiter,
     peer: SocketAddr,
-) -> Result<Option<Principal>> {
+) -> Result<Option<Authed>> {
     let ip = peer.ip();
 
     if limiter.is_locked(ip) {
         tracing::warn!(%peer, "authentication attempt while locked out");
-        audit!(event = "auth.locked_out", peer = %peer, user = %opts.username);
-        write_result(send, false, AuthReason::LockedOut).await?;
+        audit!(event = "auth.locked_out", peer = %peer);
+        write_result(send, false, AuthReason::LockedOut, false).await?;
         return Ok(None);
     }
 
-    let start = match rmp_proto::read_message(recv).await {
+    let first = match rmp_proto::read_message(recv).await {
         Ok(msg) => msg,
         Err(_) => {
             audit!(event = "auth.aborted", peer = %peer, stage = "start");
             return Ok(None);
         }
     };
-    let Message::AuthStart(AuthStart { username, initial }) = start else {
-        anyhow::bail!("expected AuthStart, got {:?}", start.frame_type());
-    };
-    audit!(event = "auth.attempt", peer = %peer, user = %username);
 
-    // Pick the credential for the requested account.
+    match first {
+        Message::AuthStart(start) => {
+            authenticate_password(send, recv, opts, limiter, peer, start).await
+        }
+        Message::KeyAuthRequest(req) => {
+            authenticate_key(send, recv, opts, limiter, peer, req).await
+        }
+        other => anyhow::bail!("unexpected first auth message: {:?}", other.frame_type()),
+    }
+}
+
+async fn authenticate_password(
+    send: &mut SendStream,
+    recv: &mut RecvStream,
+    opts: &ServerOptions,
+    limiter: &AuthLimiter,
+    peer: SocketAddr,
+    start: AuthStart,
+) -> Result<Option<Authed>> {
+    let ip = peer.ip();
+    let AuthStart { username, initial } = start;
+    audit!(event = "auth.attempt", peer = %peer, user = %username, method = "password");
+
     // - the configured user → its password file (unless password auth is off);
     // - `root` → the root password file (only when allow_root is enabled);
     // - anything else → no file: OPAQUE still answers indistinguishably.
@@ -136,19 +167,21 @@ pub async fn authenticate(
     let finish = match rmp_proto::read_message(recv).await {
         Ok(msg) => msg,
         Err(_) => {
-            // The client aborted (OPAQUE detects a wrong password client-side).
             limiter.record_failure(ip);
-            audit!(event = "auth.failure", peer = %peer, user = %username, reason = "aborted");
+            audit!(event = "auth.failure", peer = %peer, user = %username, method = "password", reason = "aborted");
             return Ok(None);
         }
     };
-    let payload = match finish {
-        Message::AuthFinish(AuthFinish { payload, .. }) => payload,
+    let (payload, device_pubkey) = match finish {
+        Message::AuthFinish(AuthFinish {
+            payload,
+            device_pubkey,
+        }) => (payload, device_pubkey),
         other => {
             limiter.record_failure(ip);
-            audit!(event = "auth.failure", peer = %peer, user = %username,
+            audit!(event = "auth.failure", peer = %peer, user = %username, method = "password",
                    reason = "unexpected_message", got = %format!("{:?}", other.frame_type()));
-            write_result(send, false, AuthReason::InvalidCredentials).await?;
+            write_result(send, false, AuthReason::InvalidCredentials, false).await?;
             return Ok(None);
         }
     };
@@ -156,34 +189,166 @@ pub async fn authenticate(
     match crypto::password::server_finish(&state, &payload) {
         Ok(_session_key) => {
             limiter.record_success(ip);
-            audit!(event = "auth.success", peer = %peer, user = %username,
-                   principal = ?principal);
-            write_result(send, true, AuthReason::Ok).await?;
-            Ok(Some(principal))
+
+            // Optional device-key enrollment on a successful password login.
+            let mut key_enrolled = false;
+            if let Some(public_key) = device_pubkey {
+                key_enrolled = enroll(opts, &username, principal, &public_key, peer);
+            }
+
+            audit!(event = "auth.success", peer = %peer, user = %username, method = "password",
+                   principal = ?principal, key_enrolled = key_enrolled);
+            write_result(send, true, AuthReason::Ok, key_enrolled).await?;
+            Ok(Some(Authed {
+                username,
+                principal,
+            }))
         }
         Err(e) => {
-            tracing::warn!(%peer, user = %username, error = %e, "authentication failed");
+            tracing::warn!(%peer, user = %username, error = %e, "password authentication failed");
             limiter.record_failure(ip);
-            let reason = if limiter.is_locked(ip) {
-                audit!(event = "auth.lockout", peer = %peer, user = %username);
-                AuthReason::LockedOut
-            } else {
-                audit!(event = "auth.failure", peer = %peer, user = %username, reason = "invalid_proof");
-                AuthReason::InvalidCredentials
-            };
-            write_result(send, false, reason).await?;
+            let reason = lockout_reason(limiter, ip, peer, &username);
+            write_result(send, false, reason, false).await?;
             Ok(None)
         }
     }
 }
 
-async fn write_result(send: &mut SendStream, ok: bool, reason: AuthReason) -> Result<()> {
+async fn authenticate_key(
+    send: &mut SendStream,
+    recv: &mut RecvStream,
+    opts: &ServerOptions,
+    limiter: &AuthLimiter,
+    peer: SocketAddr,
+    req: KeyAuthRequest,
+) -> Result<Option<Authed>> {
+    let ip = peer.ip();
+    let KeyAuthRequest {
+        username,
+        public_key,
+    } = req;
+    audit!(event = "auth.attempt", peer = %peer, user = %username, method = "key");
+
+    if !opts.allow_key_auth || public_key.len() != 32 {
+        limiter.record_failure(ip);
+        audit!(event = "auth.failure", peer = %peer, user = %username, method = "key", reason = "disabled_or_bad_key");
+        write_result(send, false, AuthReason::InvalidCredentials, false).await?;
+        return Ok(None);
+    }
+
+    // Fresh server nonce; a challenge is always issued so a peer cannot probe
+    // whether a given key is authorized.
+    let mut nonce = vec![0u8; 32];
+    rand::rngs::OsRng.fill_bytes(&mut nonce);
+    rmp_proto::write_message(
+        send,
+        &Message::KeyAuthChallenge(KeyAuthChallenge {
+            nonce: nonce.clone(),
+        }),
+    )
+    .await?;
+
+    let proof = match rmp_proto::read_message(recv).await {
+        Ok(Message::KeyAuthProof(KeyAuthProof { signature })) => signature,
+        _ => {
+            limiter.record_failure(ip);
+            audit!(event = "auth.failure", peer = %peer, user = %username, method = "key", reason = "aborted");
+            return Ok(None);
+        }
+    };
+
+    let authorized = username == opts.username;
+    let key_ok = if authorized {
+        AuthorizedKeys::load(&opts.authorized_keys_path)
+            .map(|keys| keys.contains(&public_key))
+            .unwrap_or(false)
+    } else {
+        false
+    };
+
+    let context = key_auth_context(&username, &public_key, &nonce);
+    let signature_ok = verify_device_signature(&public_key, &context, &proof);
+
+    if key_ok && signature_ok {
+        limiter.record_success(ip);
+        audit!(event = "auth.success", peer = %peer, user = %username, method = "key");
+        write_result(send, true, AuthReason::Ok, false).await?;
+        Ok(Some(Authed {
+            username,
+            principal: Principal::User,
+        }))
+    } else {
+        limiter.record_failure(ip);
+        let reason = lockout_reason(limiter, ip, peer, &username);
+        audit!(event = "auth.failure", peer = %peer, user = %username, method = "key",
+               reason = if !key_ok { "unknown_key" } else { "bad_signature" });
+        write_result(send, false, reason, false).await?;
+        Ok(None)
+    }
+}
+
+/// Store a device public key if enrollment is enabled. Returns whether a key
+/// was enrolled.
+fn enroll(
+    opts: &ServerOptions,
+    username: &str,
+    principal: Principal,
+    public_key: &[u8],
+    peer: SocketAddr,
+) -> bool {
+    if !opts.allow_key_enrollment || public_key.len() != 32 {
+        audit!(event = "key.enroll_rejected", peer = %peer, user = %username);
+        return false;
+    }
+    match AuthorizedKeys::load(&opts.authorized_keys_path).and_then(|mut keys| {
+        let comment = format!("{username}@{peer}");
+        let added = keys.add(public_key, &comment)?;
+        Ok(added)
+    }) {
+        Ok(added) => {
+            audit!(event = "key.enrolled", peer = %peer, user = %username,
+                   principal = ?principal, fingerprint = %short_fingerprint(public_key), new = added);
+            true
+        }
+        Err(e) => {
+            tracing::warn!(%peer, error = %e, "failed to enroll device key");
+            audit!(event = "key.enroll_rejected", peer = %peer, user = %username, reason = "io");
+            false
+        }
+    }
+}
+
+fn short_fingerprint(public_key: &[u8]) -> String {
+    rmp_crypto::Fingerprint::of_bytes(public_key).to_hex()
+}
+
+fn lockout_reason(
+    limiter: &AuthLimiter,
+    ip: IpAddr,
+    peer: SocketAddr,
+    username: &str,
+) -> AuthReason {
+    if limiter.is_locked(ip) {
+        audit!(event = "auth.lockout", peer = %peer, user = %username);
+        AuthReason::LockedOut
+    } else {
+        AuthReason::InvalidCredentials
+    }
+}
+
+async fn write_result(
+    send: &mut SendStream,
+    ok: bool,
+    reason: AuthReason,
+    key_enrolled: bool,
+) -> Result<()> {
     rmp_proto::write_message(
         send,
         &Message::AuthResult(AuthResult {
             ok,
             reason,
             session_token: None,
+            key_enrolled,
         }),
     )
     .await?;
@@ -203,7 +368,6 @@ mod tests {
     fn locks_out_after_max_attempts() {
         let limiter = AuthLimiter::new(3, Duration::from_secs(60));
         let addr = ip(1);
-        assert!(!limiter.is_locked(addr));
         limiter.record_failure(addr);
         limiter.record_failure(addr);
         assert!(!limiter.is_locked(addr));

@@ -46,6 +46,9 @@ pub enum FrameType {
     AuthResponse = 0x11,
     AuthFinish = 0x12,
     AuthResult = 0x13,
+    KeyAuthRequest = 0x14,
+    KeyAuthChallenge = 0x15,
+    KeyAuthProof = 0x16,
     // Control: channel management (0x2_)
     ChannelOpen = 0x20,
     ChannelOpenAck = 0x21,
@@ -84,6 +87,9 @@ impl FrameType {
             0x11 => AuthResponse,
             0x12 => AuthFinish,
             0x13 => AuthResult,
+            0x14 => KeyAuthRequest,
+            0x15 => KeyAuthChallenge,
+            0x16 => KeyAuthProof,
             0x20 => ChannelOpen,
             0x21 => ChannelOpenAck,
             0x22 => ChannelClose,
@@ -225,6 +231,30 @@ pub struct AuthResult {
     pub ok: bool,
     pub reason: AuthReason,
     pub session_token: Option<Vec<u8>>,
+    /// Set when the server stored a device key sent in `AuthFinish`.
+    #[serde(default)]
+    pub key_enrolled: bool,
+}
+
+/// Client requests key-based authentication for `username`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct KeyAuthRequest {
+    pub username: String,
+    /// Raw Ed25519 public key (32 bytes).
+    pub public_key: Vec<u8>,
+}
+
+/// Server-issued nonce the client must sign.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct KeyAuthChallenge {
+    pub nonce: Vec<u8>,
+}
+
+/// Client's proof of possession of the device key.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct KeyAuthProof {
+    /// Ed25519 signature (64 bytes) over [`crate::key_auth_context`].
+    pub signature: Vec<u8>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -343,6 +373,9 @@ pub enum Message {
     AuthResponse(AuthResponse),
     AuthFinish(AuthFinish),
     AuthResult(AuthResult),
+    KeyAuthRequest(KeyAuthRequest),
+    KeyAuthChallenge(KeyAuthChallenge),
+    KeyAuthProof(KeyAuthProof),
     ChannelOpen(ChannelOpen),
     ChannelOpenAck(ChannelOpenAck),
     ChannelClose(ChannelClose),
@@ -375,6 +408,9 @@ impl Message {
             AuthResponse(_) => FrameType::AuthResponse,
             AuthFinish(_) => FrameType::AuthFinish,
             AuthResult(_) => FrameType::AuthResult,
+            KeyAuthRequest(_) => FrameType::KeyAuthRequest,
+            KeyAuthChallenge(_) => FrameType::KeyAuthChallenge,
+            KeyAuthProof(_) => FrameType::KeyAuthProof,
             ChannelOpen(_) => FrameType::ChannelOpen,
             ChannelOpenAck(_) => FrameType::ChannelOpenAck,
             ChannelClose(_) => FrameType::ChannelClose,

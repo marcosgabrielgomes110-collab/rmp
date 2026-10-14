@@ -8,5 +8,5 @@
 pub mod client;
 pub mod term;
 
-pub use client::{transport, Client, ClientOptions, ExecOutput};
-pub use rmp_crypto::{Fingerprint, KnownHosts, Trust};
+pub use client::{transport, Client, ClientOptions, ExecOutput, Transport};
+pub use rmp_crypto::{DeviceKey, Fingerprint, KnownHosts, Trust};

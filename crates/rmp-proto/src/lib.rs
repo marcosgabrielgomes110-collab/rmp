@@ -46,5 +46,28 @@ pub const WIRE_VERSION: u8 = 1;
 /// Current application protocol version negotiated in `Hello`/`HelloAck`.
 pub const PROTO_VERSION: u16 = 1;
 
+/// Domain-separation prefix for device-key authentication signatures.
+pub const KEY_AUTH_CONTEXT: &[u8] = b"rmp-keyauth-v1";
+
+/// Bytes a device key signs to authenticate.
+///
+/// Binds the signature to the protocol version, the account name, the public
+/// key and a fresh server nonce, preventing cross-account and replay attacks.
+pub fn key_auth_context(username: &str, public_key: &[u8], nonce: &[u8]) -> Vec<u8> {
+    let mut out = Vec::with_capacity(
+        KEY_AUTH_CONTEXT.len() + 2 + username.len() + 2 + public_key.len() + 2 + nonce.len(),
+    );
+    out.extend_from_slice(KEY_AUTH_CONTEXT);
+    push_field(&mut out, username.as_bytes());
+    push_field(&mut out, public_key);
+    push_field(&mut out, nonce);
+    out
+}
+
+fn push_field(out: &mut Vec<u8>, bytes: &[u8]) {
+    out.extend_from_slice(&(bytes.len() as u16).to_be_bytes());
+    out.extend_from_slice(bytes);
+}
+
 /// Frame magic number (`'R' 'M'`).
 pub const MAGIC: u16 = 0x524D;

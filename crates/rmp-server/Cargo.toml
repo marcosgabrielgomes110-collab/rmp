@@ -17,6 +17,8 @@ tracing.workspace = true
 thiserror.workspace = true
 anyhow.workspace = true
 portable-pty.workspace = true
+hex.workspace = true
+rand.workspace = true
 
 [dev-dependencies]
 rmp-client.workspace = true

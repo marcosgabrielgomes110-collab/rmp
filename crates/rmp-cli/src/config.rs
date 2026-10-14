@@ -47,6 +47,10 @@ pub struct Auth {
     pub password_enabled: bool,
     /// Allow authenticating as `root` (requires the server to run as root).
     pub allow_root: bool,
+    /// Allow device-key (public-key) authentication.
+    pub allow_key_auth: bool,
+    /// Allow enrolling a device key after a successful password login.
+    pub allow_key_enrollment: bool,
     /// Failed attempts allowed before a temporary lockout.
     pub max_auth_attempts: u32,
     /// Lockout duration in seconds.
@@ -88,6 +92,10 @@ pub struct Client {
     pub strict_host_key: bool,
     /// Trust unseen hosts without prompting (trust-on-first-use).
     pub accept_new_hosts: bool,
+    /// Try device-key authentication before falling back to a password.
+    pub enable_key_auth: bool,
+    /// Offer to enroll this device's key after a password login.
+    pub offer_enrollment: bool,
     /// Timeout for establishing the connection, in seconds.
     pub connect_timeout_secs: u64,
     /// Default idle timeout for sessions, in seconds.
@@ -116,6 +124,8 @@ defaults!(Server,
 defaults!(Auth,
     password_enabled: true,
     allow_root: false,
+    allow_key_auth: true,
+    allow_key_enrollment: true,
     max_auth_attempts: 5,
     lockout_secs: 30,
 );
@@ -138,6 +148,8 @@ defaults!(Logging,
 defaults!(Client,
     strict_host_key: true,
     accept_new_hosts: false,
+    enable_key_auth: true,
+    offer_enrollment: true,
     connect_timeout_secs: 10,
     idle_timeout_secs: 600,
 );
@@ -188,6 +200,10 @@ password_enabled = true
 # Allow logging in as `root`. Requires the server to run as root (systemd).
 # Set the root password with `rmp passwd --root` (or `rmp init --root`).
 allow_root = {allow_root}
+# Allow device-key (public-key) authentication.
+allow_key_auth = true
+# Allow enrolling a device key after a successful password login.
+allow_key_enrollment = true
 # Failed attempts before a temporary lockout (per source IP).
 max_auth_attempts = 5
 # Lockout duration, in seconds.
@@ -220,6 +236,10 @@ log_dir = ""
 strict_host_key = true
 # Trust unseen hosts without prompting.
 accept_new_hosts = false
+# Try device-key authentication before falling back to a password.
+enable_key_auth = true
+# Offer to enroll this device's key after a password login.
+offer_enrollment = true
 # Timeout for establishing a connection, in seconds.
 connect_timeout_secs = 10
 # Default session idle timeout, in seconds.

@@ -57,6 +57,10 @@ sequenceDiagram
     S-->>C: spawn do shell → terminal interativo
 ```
 
+> Alternativa ao OPAQUE depois do 1º acesso: **chave de dispositivo**. O cliente envia
+> `KeyAuthRequest`, o servidor responde `KeyAuthChallenge` (nonce) e o cliente prova posse
+> com `KeyAuthProof` (assinatura Ed25519 sobre usuário+chave+nonce).
+
 | Crate | Responsabilidade |
 |---|---|
 | `rmp-proto` | Wire protocol: framing, mensagens, codecs |
@@ -75,6 +79,7 @@ sequenceDiagram
 | Resistência pós-quântica | Key exchange híbrido **X25519 + ML-KEM-768** (padrão) |
 | Anti-MITM | Pinning de **fingerprint** (Ed25519, TOFU/`known_hosts`) |
 | Senha nunca exposta | **OPAQUE (RFC 9807)**; servidor guarda registro resistente a ataque offline |
+| Login sem senha | **Chave de dispositivo Ed25519**; o servidor assina/verifica um nonce (sem replay) |
 | Anti-brute-force | Rate limit + lockout por IP |
 | Controle de acesso | Allow/deny por **CIDR** |
 | Segredos em disco | Diretórios `0700`, arquivos `0600`, `zeroize` em memória |
@@ -109,6 +114,18 @@ rmp passwd                   # troca a senha do usuário
 rmp connect alice@host --accept-new
 ```
 
+### Login sem senha (chave de dispositivo)
+
+No **primeiro** acesso por senha, o cliente oferece registrar uma chave **Ed25519** deste
+dispositivo. Se você aceitar, o servidor grava a chave pública em `authorized_keys` e os
+acessos seguintes **não pedem senha** (a chave é a única credencial; a privada fica em
+`~/.local/share/rmp/identities/`, modo `0600`).
+
+A chave autentica assinando um **nonce** gerado pelo servidor (resistente a replay), com
+domínio/usuário/chave ligados à assinatura. Tudo controlável no `config.toml`:
+`[auth] allow_key_auth`, `[auth] allow_key_enrollment`, `[client] enable_key_auth`,
+`[client] offer_enrollment`.
+
 ## Diretórios e logs
 
 Separados por função (XDG para usuário, FHS para serviço); diretórios `0700`, segredos `0600`:
@@ -127,7 +144,8 @@ Separados por função (XDG para usuário, FHS para serviço); diretórios `0700
 
 O `rmp init` gera um `config.toml` **totalmente comentado** (veja
 [`config.example.toml`](config.example.toml)). Principais seções: `[server]`, `[auth]`
-(inclui `allow_root`), `[security]` (CIDR, timeouts), `[logging]`, `[client]`.
+(inclui `allow_root`, `allow_key_auth`, `allow_key_enrollment`), `[security]` (CIDR,
+timeouts), `[logging]`, `[client]` (inclui `enable_key_auth`, `offer_enrollment`).
 
 Para login como **root**: `rmp init --root` (ou `rmp passwd --root` + `allow_root = true`)
 — e o `rmp serve` **precisa rodar como root**; caso contrário ele recusa iniciar.
@@ -142,7 +160,7 @@ Para login como **root**: `rmp init --root` (ou `rmp passwd --root` + `allow_roo
 
 ```sh
 make            # binário release (LTO + strip) em target/release/rmp
-make test       # 41 testes (unit + integração end-to-end)
+make test       # 53 testes (unit + integração end-to-end)
 make clippy     # lint (warnings = erro)
 make install    # instala em $(PREFIX)/bin
 make dist       # empacota dist/rmp-<versão>-<os>-<arch>.tar.gz

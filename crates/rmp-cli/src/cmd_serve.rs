@@ -59,6 +59,9 @@ pub async fn run(layout: &Layout, listen_override: Option<String>) -> Result<()>
     opts.root_password_file = root_password_file;
     opts.allow_root = config.auth.allow_root;
     opts.password_enabled = config.auth.password_enabled;
+    opts.allow_key_auth = config.auth.allow_key_auth;
+    opts.allow_key_enrollment = config.auth.allow_key_enrollment;
+    opts.authorized_keys_path = layout.authorized_keys_file();
     opts.max_auth_attempts = config.auth.max_auth_attempts;
     opts.lockout = Duration::from_secs(config.auth.lockout_secs);
     opts.idle_timeout = Duration::from_secs(config.security.idle_timeout_secs);
@@ -102,6 +105,22 @@ pub async fn run(layout: &Layout, listen_override: Option<String>) -> Result<()>
             "enabled"
         } else {
             "DISABLED"
+        }
+    );
+    println!(
+        "  key auth         : {}",
+        if opts.allow_key_auth {
+            "enabled"
+        } else {
+            "disabled"
+        }
+    );
+    println!(
+        "  key enrollment   : {}",
+        if opts.allow_key_enrollment {
+            "enabled"
+        } else {
+            "disabled"
         }
     );
     println!("  host fingerprint : {}", opts.host_key.fingerprint());

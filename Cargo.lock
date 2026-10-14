@@ -545,6 +545,7 @@ version = "2.2.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "115531babc129696a58c64a4fef0a8bf9e9698629fb97e9e40767d235cfbcd53"
 dependencies = [
+ "pkcs8",
  "serde",
  "signature",
 ]
@@ -557,10 +558,12 @@ checksum = "70e796c081cee67dc755e1a36a0a172b897fab85fc3f6bc48307991f64e4eca9"
 dependencies = [
  "curve25519-dalek",
  "ed25519",
+ "rand_core 0.6.4",
  "serde",
  "sha2",
  "signature",
  "subtle",
+ "zeroize",
 ]
 
 [[package]]
@@ -1375,6 +1378,7 @@ name = "rmp-crypto"
 version = "0.1.0"
 dependencies = [
  "argon2",
+ "ed25519-dalek",
  "hex",
  "opaque-ke",
  "rand 0.8.8",
@@ -1412,8 +1416,10 @@ name = "rmp-server"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "hex",
  "portable-pty",
  "quinn",
+ "rand 0.8.8",
  "rmp-client",
  "rmp-crypto",
  "rmp-proto",

@@ -36,6 +36,9 @@ pub enum CryptoError {
 
     #[error("password file is malformed or truncated")]
     MalformedPasswordFile,
+
+    #[error("invalid device key material")]
+    BadKeyMaterial,
 }
 
 impl From<rcgen::Error> for CryptoError {

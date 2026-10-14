@@ -6,12 +6,14 @@
 #![forbid(unsafe_code)]
 
 pub mod auth;
+pub mod keys;
 pub mod net;
 pub mod server;
 pub mod session;
 
 mod audit;
 
-pub use auth::Principal;
+pub use auth::{Authed, Principal};
+pub use keys::AuthorizedKeys;
 pub use net::Cidr;
 pub use server::{bind, quic_server_config, serve, ServerOptions};

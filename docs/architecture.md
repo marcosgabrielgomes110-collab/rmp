@@ -97,6 +97,25 @@ Cliente                                   Servidor
   │◄────────────────────────────────────────►│
 ```
 
+### Chave de dispositivo (login sem senha)
+
+No primeiro acesso por senha o cliente pode registrar uma chave **Ed25519** do
+dispositivo: a chave pública vai em `AuthFinish.device_pubkey`, o servidor grava em
+`authorized_keys` (modo `0600`) e responde `AuthResult.key_enrolled`. Nos acessos
+seguintes a autenticação é por desafio:
+
+```
+C→S  KeyAuthRequest   { username, public_key }
+S→C  KeyAuthChallenge { nonce }               # sempre enviado (não vaza chaves)
+C→S  KeyAuthProof     { signature }           # Ed25519 sobre usuário+chave+nonce
+S→C  AuthResult       { ok }
+```
+
+A assinatura usa `rmp_proto::key_auth_context` (domínio `rmp-keyauth-v1`), ligando-a ao
+usuário, à chave e a um nonce novo — impedindo replay e confusão entre contas. O servidor
+só aceita chaves presentes em `authorized_keys` do usuário configurado; o login por chave
+e o enrollment podem ser desligados (`[auth] allow_key_auth`, `[auth] allow_key_enrollment`).
+
 ## 5. Ciclo de vida da sessão
 
 - **Abertura:** `ChannelOpen(type=session)` seguido de `PtyRequest` + `Shell` (ou `Exec`).

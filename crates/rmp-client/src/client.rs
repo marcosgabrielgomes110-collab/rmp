@@ -3,10 +3,11 @@
 use crate::term;
 use anyhow::{bail, Context, Result};
 use quinn::{Connection, Endpoint, RecvStream, SendStream};
-use rmp_crypto::{self as crypto, Fingerprint, ObservedFingerprint};
+use rmp_crypto::{self as crypto, DeviceKey, Fingerprint, ObservedFingerprint};
 use rmp_proto::{
-    AuthFinish, AuthResponse, AuthResult, AuthStart, Data, Exec, ExitStatus, Hello, HelloAck,
-    Message, PtyRequest, WindowChange,
+    key_auth_context, AuthFinish, AuthResponse, AuthResult, AuthStart, Data, Exec, ExitStatus,
+    Hello, HelloAck, KeyAuthChallenge, KeyAuthProof, KeyAuthRequest, Message, PtyRequest,
+    WindowChange,
 };
 use std::net::SocketAddr;
 use std::sync::Arc;
@@ -46,12 +47,7 @@ pub fn quic_client_config(
 }
 
 /// Establish the encrypted transport (TLS handshake only, no authentication).
-///
-/// Returns the QUIC endpoint (kept alive by the caller), the connection and the
-/// observed server fingerprint.
-pub async fn transport(
-    opts: &ClientOptions,
-) -> Result<(Endpoint, Connection, ObservedFingerprint)> {
+pub async fn transport(opts: &ClientOptions) -> Result<Transport> {
     let bind: SocketAddr = if opts.server_addr.is_ipv4() {
         "0.0.0.0:0".parse().unwrap()
     } else {
@@ -72,7 +68,132 @@ pub async fn transport(
         .context("QUIC/TLS handshake")?;
 
     info!(addr = %conn.remote_address(), "transport established");
-    Ok((endpoint, conn, observed))
+    Ok(Transport {
+        endpoint,
+        conn,
+        observed,
+    })
+}
+
+/// An established, unauthenticated transport.
+pub struct Transport {
+    endpoint: Endpoint,
+    conn: Connection,
+    observed: ObservedFingerprint,
+}
+
+impl Transport {
+    /// The fingerprint the server presented, if the handshake completed.
+    pub fn observed_fingerprint(&self) -> Option<Fingerprint> {
+        self.observed.get()
+    }
+
+    pub fn remote_address(&self) -> SocketAddr {
+        self.conn.remote_address()
+    }
+
+    /// Authenticate with a password, optionally enrolling `enroll_public_key`.
+    pub async fn authenticate_password(
+        self,
+        username: &str,
+        password: &[u8],
+        enroll_public_key: Option<Vec<u8>>,
+    ) -> Result<Client> {
+        let Transport {
+            endpoint,
+            conn,
+            observed,
+        } = self;
+        let (mut send, mut recv) = Client::open_control(&conn).await?;
+
+        let (initial, state) =
+            crypto::password::client_start(password).context("OPAQUE client_start")?;
+        rmp_proto::write_message(
+            &mut send,
+            &Message::AuthStart(AuthStart {
+                username: username.to_string(),
+                initial,
+            }),
+        )
+        .await?;
+
+        let response = rmp_proto::read_message(&mut recv).await?;
+        let Message::AuthResponse(AuthResponse { payload }) = response else {
+            bail!("expected AuthResponse, got {:?}", response.frame_type());
+        };
+
+        let (finalization, _session_key) =
+            crypto::password::client_finish(state, &payload, password)?;
+
+        rmp_proto::write_message(
+            &mut send,
+            &Message::AuthFinish(AuthFinish {
+                payload: finalization,
+                device_pubkey: enroll_public_key,
+            }),
+        )
+        .await?;
+
+        let result = rmp_proto::read_message(&mut recv).await?;
+        let Message::AuthResult(AuthResult {
+            ok,
+            reason,
+            key_enrolled,
+            ..
+        }) = result
+        else {
+            bail!("expected AuthResult, got {:?}", result.frame_type());
+        };
+        if !ok {
+            bail!("authentication rejected: {reason:?}");
+        }
+        Client::finish(endpoint, conn, send, recv, observed, key_enrolled, username).await
+    }
+
+    /// Authenticate with a device key (passwordless).
+    pub async fn authenticate_key(self, username: &str, device_key: &DeviceKey) -> Result<Client> {
+        let Transport {
+            endpoint,
+            conn,
+            observed,
+        } = self;
+        let (mut send, mut recv) = Client::open_control(&conn).await?;
+        let public_key = device_key.public_key();
+
+        rmp_proto::write_message(
+            &mut send,
+            &Message::KeyAuthRequest(KeyAuthRequest {
+                username: username.to_string(),
+                public_key: public_key.clone(),
+            }),
+        )
+        .await?;
+
+        let challenge = rmp_proto::read_message(&mut recv).await?;
+        let Message::KeyAuthChallenge(KeyAuthChallenge { nonce }) = challenge else {
+            bail!(
+                "expected KeyAuthChallenge, got {:?}",
+                challenge.frame_type()
+            );
+        };
+
+        let context = key_auth_context(username, &public_key, &nonce);
+        let signature = device_key.sign(&context);
+        rmp_proto::write_message(
+            &mut send,
+            &Message::KeyAuthProof(KeyAuthProof { signature }),
+        )
+        .await?;
+
+        let result = rmp_proto::read_message(&mut recv).await?;
+        let Message::AuthResult(AuthResult { ok, reason, .. }) = result else {
+            bail!("expected AuthResult, got {:?}", result.frame_type());
+        };
+        if !ok {
+            bail!("device key rejected: {reason:?}");
+        }
+        Client::finish(endpoint, conn, send, recv, observed, false, username).await
+    }
 }
 
 /// An authenticated client, holding the control stream open.
@@ -82,6 +203,7 @@ pub struct Client {
     _ctrl_send: SendStream,
     _ctrl_recv: RecvStream,
     observed: Option<Fingerprint>,
+    key_enrolled: bool,
 }
 
 /// Output of a non-interactive command.
@@ -91,32 +213,11 @@ pub struct ExecOutput {
 }
 
 impl Client {
-    /// Connect and authenticate with a password.
-    pub async fn connect(opts: &ClientOptions, username: &str, password: &[u8]) -> Result<Client> {
-        let (endpoint, conn, observed) = transport(opts).await?;
-        Client::authenticate(endpoint, conn, observed, username, password).await
-    }
-
-    /// Authenticate over an already-established transport.
-    ///
-    /// This is separated from [`Client::connect`] so a caller can verify (and
-    /// let the user confirm) the server fingerprint **before** any credential
-    /// is sent.
-    pub async fn authenticate(
-        endpoint: Endpoint,
-        conn: Connection,
-        observed: ObservedFingerprint,
-        username: &str,
-        password: &[u8],
-    ) -> Result<Client> {
-        let observed_fp = observed.get();
-
-        // The control channel: application handshake + authentication.
-        let (mut ctrl_send, mut ctrl_recv) =
-            conn.open_bi().await.context("opening control stream")?;
-
+    /// Open the control stream and perform the application handshake.
+    async fn open_control(conn: &Connection) -> Result<(SendStream, RecvStream)> {
+        let (mut send, mut recv) = conn.open_bi().await.context("opening control stream")?;
         rmp_proto::write_message(
-            &mut ctrl_send,
+            &mut send,
             &Message::Hello(Hello {
                 proto_version: rmp_proto::PROTO_VERSION,
                 client_name: "rmp".to_string(),
@@ -126,7 +227,7 @@ impl Client {
         .await
         .context("sending Hello")?;
 
-        let ack = rmp_proto::read_message(&mut ctrl_recv)
+        let ack = rmp_proto::read_message(&mut recv)
             .await
             .context("reading HelloAck")?;
         let Message::HelloAck(HelloAck { proto_version, .. }) = ack else {
@@ -135,61 +236,49 @@ impl Client {
         if proto_version != rmp_proto::PROTO_VERSION {
             bail!("protocol version mismatch: server={proto_version}");
         }
+        Ok((send, recv))
+    }
 
-        // OPAQUE authentication.
-        let (initial, state) =
-            crypto::password::client_start(password).context("OPAQUE client_start")?;
-        rmp_proto::write_message(
-            &mut ctrl_send,
-            &Message::AuthStart(AuthStart {
-                username: username.to_string(),
-                initial,
-            }),
-        )
-        .await?;
-
-        let response = rmp_proto::read_message(&mut ctrl_recv).await?;
-        let Message::AuthResponse(AuthResponse { payload }) = response else {
-            bail!("expected AuthResponse, got {:?}", response.frame_type());
-        };
-
-        let (finalization, _session_key) =
-            crypto::password::client_finish(state, &payload, password)?;
-
-        rmp_proto::write_message(
-            &mut ctrl_send,
-            &Message::AuthFinish(AuthFinish {
-                payload: finalization,
-                device_pubkey: None,
-            }),
-        )
-        .await?;
-
-        let result = rmp_proto::read_message(&mut ctrl_recv).await?;
-        let Message::AuthResult(AuthResult { ok, reason, .. }) = result else {
-            bail!("expected AuthResult, got {:?}", result.frame_type());
-        };
-        if !ok {
-            bail!("authentication rejected: {reason:?}");
-        }
+    async fn finish(
+        endpoint: Endpoint,
+        conn: Connection,
+        send: SendStream,
+        recv: RecvStream,
+        observed: ObservedFingerprint,
+        key_enrolled: bool,
+        username: &str,
+    ) -> Result<Client> {
         info!(user = username, "authenticated");
-
         Ok(Client {
             _endpoint: endpoint,
             conn,
-            _ctrl_send: ctrl_send,
-            _ctrl_recv: ctrl_recv,
-            observed: observed_fp,
+            _ctrl_send: send,
+            _ctrl_recv: recv,
+            observed: observed.get(),
+            key_enrolled,
         })
+    }
+
+    /// Connect and authenticate with a password.
+    pub async fn connect(opts: &ClientOptions, username: &str, password: &[u8]) -> Result<Client> {
+        transport(opts)
+            .await?
+            .authenticate_password(username, password, None)
+            .await
     }
 
     pub fn connection(&self) -> &Connection {
         &self.conn
     }
 
-    /// The fingerprint the server presented (available after the handshake).
+    /// The fingerprint the server presented.
     pub fn observed_fingerprint(&self) -> Option<Fingerprint> {
         self.observed
+    }
+
+    /// Whether a device key was enrolled during this connection.
+    pub fn key_enrolled(&self) -> bool {
+        self.key_enrolled
     }
 
     /// Run a command and collect all output.
@@ -221,9 +310,6 @@ impl Client {
     }
 
     /// Run a script through an interactive PTY session and collect the output.
-    ///
-    /// The script is written to the shell's stdin; it is expected to end with
-    /// `exit` so the session terminates. Useful for tests and automation.
     pub async fn pty_capture(&self, script: &str) -> Result<ExecOutput> {
         let (mut send, mut recv) = self.conn.open_bi().await.context("opening pty session")?;
         rmp_proto::write_message(
@@ -264,8 +350,6 @@ impl Client {
     }
 
     /// Open an interactive PTY session bridged to the local terminal.
-    ///
-    /// Returns the remote exit code.
     pub async fn interactive(&self, term_name: &str, cols: u16, rows: u16) -> Result<u32> {
         let (mut send, mut recv) = self.conn.open_bi().await.context("opening session")?;
         rmp_proto::write_message(

@@ -13,12 +13,14 @@
 
 #![forbid(unsafe_code)]
 
+pub mod device;
 pub mod error;
 pub mod hostkey;
 pub mod known_hosts;
 pub mod password;
 pub mod tls;
 
+pub use device::{verify as verify_device_signature, DeviceKey};
 pub use error::CryptoError;
 pub use hostkey::{Fingerprint, HostKey};
 pub use known_hosts::{KnownHosts, Trust};

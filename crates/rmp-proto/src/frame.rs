@@ -134,6 +134,17 @@ mod tests {
             ok: true,
             reason: AuthReason::Ok,
             session_token: Some(vec![1, 2, 3]),
+            key_enrolled: true,
+        }));
+        roundtrip(Message::KeyAuthRequest(KeyAuthRequest {
+            username: "alice".into(),
+            public_key: vec![7u8; 32],
+        }));
+        roundtrip(Message::KeyAuthChallenge(KeyAuthChallenge {
+            nonce: vec![9u8; 32],
+        }));
+        roundtrip(Message::KeyAuthProof(KeyAuthProof {
+            signature: vec![3u8; 64],
         }));
         roundtrip(Message::ChannelOpen(ChannelOpen {
             channel_id: 7,
@@ -246,5 +257,21 @@ mod tests {
         assert!(!Message::Data(Data { data: vec![] }).is_control());
         assert!(Message::Shell.expect_session().is_ok());
         assert!(Message::Shell.expect_control().is_err());
+        assert!(Message::KeyAuthRequest(KeyAuthRequest {
+            username: "a".into(),
+            public_key: vec![],
+        })
+        .is_control());
+    }
+
+    #[test]
+    fn key_auth_context_binds_fields() {
+        let a = crate::key_auth_context("alice", &[1, 2, 3], &[9, 9]);
+        let b = crate::key_auth_context("alice", &[1, 2, 3], &[9, 9]);
+        assert_eq!(a, b, "deterministic");
+        assert_ne!(a, crate::key_auth_context("bob", &[1, 2, 3], &[9, 9]));
+        assert_ne!(a, crate::key_auth_context("alice", &[1, 2, 4], &[9, 9]));
+        assert_ne!(a, crate::key_auth_context("alice", &[1, 2, 3], &[9, 8]));
+        assert!(a.starts_with(crate::KEY_AUTH_CONTEXT));
     }
 }

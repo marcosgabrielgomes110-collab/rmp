@@ -25,6 +25,10 @@ pub const HOST_KEY_FILE: &str = "host_key.pem";
 pub const OPAQUE_SETUP_FILE: &str = "opaque_setup.bin";
 pub const PASSWORD_FILE: &str = "password_file.bin";
 pub const PASSWORD_FILE_ROOT: &str = "password_file.root.bin";
+/// Public keys authorized to log in (server side).
+pub const AUTHORIZED_KEYS_FILE: &str = "authorized_keys";
+/// Local device identities (client side).
+pub const IDENTITIES_DIR: &str = "identities";
 pub const LOG_FILE: &str = "rmp.log";
 pub const AUDIT_FILE: &str = "audit.log";
 
@@ -111,6 +115,14 @@ impl Layout {
     /// Registration record for the optional `root` account.
     pub fn root_password_file(&self) -> PathBuf {
         self.data_dir.join(PASSWORD_FILE_ROOT)
+    }
+    /// The `authorized_keys` file (server side).
+    pub fn authorized_keys_file(&self) -> PathBuf {
+        self.data_dir.join(AUTHORIZED_KEYS_FILE)
+    }
+    /// Directory holding this client's device identities.
+    pub fn identities_dir(&self) -> PathBuf {
+        self.data_dir.join(IDENTITIES_DIR)
     }
     pub fn log_file(&self) -> PathBuf {
         self.state_dir.join(LOG_FILE)

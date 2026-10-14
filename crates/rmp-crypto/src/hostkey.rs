@@ -18,8 +18,13 @@ pub struct Fingerprint([u8; 32]);
 impl Fingerprint {
     /// Fingerprint of a DER-encoded certificate.
     pub fn of_cert_der(der: &[u8]) -> Self {
+        Self::of_bytes(der)
+    }
+
+    /// Fingerprint of an arbitrary byte string (e.g. a public key).
+    pub fn of_bytes(bytes: &[u8]) -> Self {
         let mut hasher = Sha256::new();
-        hasher.update(der);
+        hasher.update(bytes);
         Fingerprint(hasher.finalize().into())
     }
 
