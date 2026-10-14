@@ -26,7 +26,7 @@ rmp-client = { path = "crates/rmp-client" }
 
 serde = { version = "1", features = ["derive"] }
 postcard = { version = "1", features = ["alloc"] }
-thiserror = "1"
+thiserror = "2"
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "io-util", "io-std", "sync", "time", "signal", "process"] }
 quinn = "0.11"
 rustls = "0.23"

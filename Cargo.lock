@@ -1368,7 +1368,7 @@ dependencies = [
  "rmp-crypto",
  "rmp-proto",
  "rustls",
- "thiserror 1.0.69",
+ "thiserror 2.0.21",
  "tokio",
  "tracing",
 ]
@@ -1388,7 +1388,7 @@ dependencies = [
  "rustls",
  "sha2",
  "tempfile",
- "thiserror 1.0.69",
+ "thiserror 2.0.21",
  "tracing",
  "zeroize",
 ]
@@ -1407,7 +1407,7 @@ version = "0.1.0"
 dependencies = [
  "postcard",
  "serde",
- "thiserror 1.0.69",
+ "thiserror 2.0.21",
  "tokio",
 ]
 
@@ -1425,7 +1425,7 @@ dependencies = [
  "rmp-proto",
  "rustls",
  "tempfile",
- "thiserror 1.0.69",
+ "thiserror 2.0.21",
  "tokio",
  "tracing",
 ]
