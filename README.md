@@ -181,7 +181,24 @@ make test       # 57 testes (unit + integração end-to-end)
 make clippy     # lint (warnings = erro)
 make install    # instala em $(PREFIX)/bin
 make dist       # empacota dist/rmp-<versão>-<os>-<arch>.tar.gz
+make update     # atualiza a partir do Release mais recente do GitHub
 ```
+
+## Atualização
+
+O script `scripts/update.sh` verifica o **Release mais recente** do repositório, compara
+com a versão instalada (`rmp --version`) e, se houver versão nova, baixa o binário do seu
+SO/arquitetura, valida que ele executa e instala (via `sudo` se necessário):
+
+```sh
+scripts/update.sh            # verifica e, se houver versão nova, pergunta e instala
+scripts/update.sh --check    # apenas verifica (não instala)
+scripts/update.sh --yes      # instala sem perguntar (automação)
+scripts/update.sh --force    # reinstala mesmo se já estiver atualizado
+make update                  # atalho para scripts/update.sh
+```
+
+Variáveis: `RMP_INSTALL_DIR` (padrão `/usr/local/bin`) e `RMP_REPO` (padrão o repo oficial).
 
 Ou direto com o Cargo:
 

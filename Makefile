@@ -99,6 +99,9 @@ dist: release ## Package the binary and docs into dist/
 
 # ---- Convenience -----------------------------------------------------------
 
+update: ## Check the latest GitHub release and update the installed rmp
+	./scripts/update.sh
+
 REMOTE ?= user@host:2222
 # Extra flags, e.g. ARGS="--system" or ARGS="--dir ./state"
 ARGS   ?=
