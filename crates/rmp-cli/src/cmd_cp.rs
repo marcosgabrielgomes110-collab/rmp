@@ -63,7 +63,10 @@ fn classify(src: &str, dst: &str) -> Result<(String, String, String, bool)> {
         (Some(_), Some(_)) => bail!("both paths are remote; not supported"),
         (Some((remote, path)), None) => Ok((remote, path, dst.to_string(), false)),
         (None, Some((remote, path))) => Ok((remote, path, src.to_string(), true)),
-        (None, None) => bail!("one side must be user@host:path (remote)"),
+        (None, None) => bail!(
+            "one side must be a remote spec `user@host:path` \
+             (e.g. dev@host:/tmp/file or dev@host:~/bin/file)"
+        ),
     }
 }
 

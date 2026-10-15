@@ -430,6 +430,8 @@ pub enum FileOp {
 pub struct FileRequest {
     pub op: FileOp,
     pub path: String,
+    /// Unix mode to apply on `Put` (0 = server default). Ignored for `Get`.
+    pub mode: u32,
 }
 
 /// Response to [`FileRequest`] (initial ack); `size` is the file size for `Get`.
@@ -438,6 +440,8 @@ pub struct FileResponse {
     pub ok: bool,
     pub size: u64,
     pub reason: Option<String>,
+    /// Unix mode of the source file on `Get` (0 = unknown). Ignored for `Put`.
+    pub mode: u32,
 }
 
 // ---------------------------------------------------------------------------

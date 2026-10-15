@@ -387,17 +387,18 @@ impl Client {
             &Message::FileRequest(FileRequest {
                 op: FileOp::Get,
                 path: remote.to_string(),
+                mode: 0,
             }),
         )
         .await?;
 
-        match rmp_proto::read_message(&mut recv).await? {
-            Message::FileResponse(r) if r.ok => {}
+        let mode = match rmp_proto::read_message(&mut recv).await? {
+            Message::FileResponse(r) if r.ok => r.mode,
             Message::FileResponse(r) => {
                 bail!("remote refused: {}", r.reason.unwrap_or_default())
             }
             other => bail!("unexpected response: {:?}", other.frame_type()),
-        }
+        };
 
         let mut file = tokio::fs::File::create(local.as_ref())
             .await
@@ -415,6 +416,8 @@ impl Client {
             }
         }
         tokio::io::AsyncWriteExt::flush(&mut file).await?;
+        drop(file);
+        apply_mode(local.as_ref(), mode);
         Ok(total)
     }
 
@@ -426,6 +429,7 @@ impl Client {
             &Message::FileRequest(FileRequest {
                 op: FileOp::Put,
                 path: remote.to_string(),
+                mode: local_mode(local.as_ref()),
             }),
         )
         .await?;
@@ -542,5 +546,36 @@ impl Client {
                 }
             }
         }
+    }
+}
+
+/// Unix permission bits of a local file (0 elsewhere). Used to preserve the
+/// mode across a `Put`.
+#[cfg(unix)]
+fn local_mode(path: &Path) -> u32 {
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::metadata(path)
+        .map(|m| m.permissions().mode() & 0o7777)
+        .unwrap_or(0)
+}
+
+#[cfg(not(unix))]
+fn local_mode(_path: &Path) -> u32 {
+    0
+}
+
+/// Apply a Unix mode to a local path (no-op for `mode == 0` or non-Unix).
+fn apply_mode(path: &Path, mode: u32) {
+    if mode == 0 {
+        return;
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = std::fs::set_permissions(path, std::fs::Permissions::from_mode(mode & 0o7777));
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = (path, mode);
     }
 }

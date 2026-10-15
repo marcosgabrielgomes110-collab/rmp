@@ -212,11 +212,13 @@ mod tests {
         roundtrip(Message::FileRequest(FileRequest {
             op: FileOp::Get,
             path: "/etc/hosts".into(),
+            mode: 0o644,
         }));
         roundtrip(Message::FileResponse(FileResponse {
             ok: true,
             size: 1234,
             reason: None,
+            mode: 0o755,
         }));
     }
 

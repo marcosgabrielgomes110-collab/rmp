@@ -11,6 +11,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Fuzzing of the wire format and 0-RTT resumption.
 
+## [0.5.0] - 2026-10-15
+
+### Changed
+
+- **File transfer preserves Unix permissions** in both directions: `Put` sends the source
+  mode and `Get` returns the remote mode, applied to the local file. `PROTO_VERSION`
+  bumped to 3 (`FileRequest`/`FileResponse` gained a `mode` field).
+
+### Fixed
+
+- `rmp cp` remote paths accept `~` / `~/...` (expand to the server user's home).
+- `rmp cp` error message now shows the expected `user@host:path` syntax.
+
 ## [0.4.0] - 2026-10-15
 
 ### Added
@@ -93,7 +106,8 @@ Initial MVP: a functional, tested, SSH-like remote shell.
 - **Logging**: rotating `rmp.log` (everything) and `audit.log` (security events only).
 - Fully commented [configuration example](config.example.toml).
 
-[Unreleased]: https://github.com/marcosgabrielgomes110-collab/rmp/compare/v0.4.0...HEAD
+[Unreleased]: https://github.com/marcosgabrielgomes110-collab/rmp/compare/v0.5.0...HEAD
+[0.5.0]: https://github.com/marcosgabrielgomes110-collab/rmp/releases/tag/v0.5.0
 [0.4.0]: https://github.com/marcosgabrielgomes110-collab/rmp/releases/tag/v0.4.0
 [0.3.0]: https://github.com/marcosgabrielgomes110-collab/rmp/releases/tag/v0.3.0
 [0.2.0]: https://github.com/marcosgabrielgomes110-collab/rmp/releases/tag/v0.2.0

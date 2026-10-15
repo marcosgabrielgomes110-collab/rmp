@@ -417,6 +417,7 @@ async fn handle_stream(
                         ok: false,
                         size: 0,
                         reason: Some("file transfer is disabled".into()),
+                        mode: 0,
                     }),
                 )
                 .await;

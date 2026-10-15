@@ -15,16 +15,57 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 const CHUNK: usize = 64 * 1024;
 
-/// Resolve a requested path. Relative paths are taken from the server user's
-/// home directory; absolute paths are used as-is (the OS enforces permissions).
+/// Resolve a requested path. `~` / `~/...` expand to the server user's home;
+/// relative paths are taken from home; absolute paths are used as-is.
 fn resolve(path: &str) -> PathBuf {
+    let home = std::env::var_os("HOME").map(PathBuf::from);
+
+    if path == "~" {
+        if let Some(home) = &home {
+            return home.clone();
+        }
+    }
+    if let Some(rest) = path.strip_prefix("~/") {
+        if let Some(home) = &home {
+            return home.join(rest);
+        }
+    }
+
     let p = PathBuf::from(path);
     if p.is_absolute() {
         return p;
     }
-    match std::env::var_os("HOME") {
-        Some(home) => PathBuf::from(home).join(p),
+    match home {
+        Some(home) => home.join(p),
         None => p,
+    }
+}
+
+/// The Unix permission bits of a file (0 on non-Unix platforms).
+#[cfg(unix)]
+fn unix_mode(meta: &std::fs::Metadata) -> u32 {
+    use std::os::unix::fs::PermissionsExt;
+    meta.permissions().mode() & 0o7777
+}
+
+#[cfg(not(unix))]
+fn unix_mode(_meta: &std::fs::Metadata) -> u32 {
+    0
+}
+
+/// Apply a Unix mode to a path (no-op for `mode == 0` or non-Unix).
+fn apply_mode(path: &Path, mode: u32) {
+    if mode == 0 {
+        return;
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = std::fs::set_permissions(path, std::fs::Permissions::from_mode(mode & 0o7777));
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = (path, mode);
     }
 }
 
@@ -38,7 +79,7 @@ pub async fn serve(
     let path = resolve(&req.path);
     match req.op {
         FileOp::Get => get(&mut send, &path, peer).await,
-        FileOp::Put => put(&mut send, &mut recv, &path, peer).await,
+        FileOp::Put => put(&mut send, &mut recv, &path, req.mode, peer).await,
     }
 }
 
@@ -55,6 +96,7 @@ async fn get(send: &mut SendStream, path: &Path, peer: SocketAddr) -> Result<()>
             ok: true,
             size: meta.len(),
             reason: None,
+            mode: unix_mode(&meta),
         }),
     )
     .await?;
@@ -86,6 +128,7 @@ async fn put(
     send: &mut SendStream,
     recv: &mut RecvStream,
     path: &Path,
+    mode: u32,
     peer: SocketAddr,
 ) -> Result<()> {
     if let Ok(m) = fs::metadata(path).await {
@@ -105,6 +148,7 @@ async fn put(
             ok: true,
             size: 0,
             reason: None,
+            mode: 0,
         }),
     )
     .await?;
@@ -123,6 +167,8 @@ async fn put(
     }
     file.flush().await?;
     drop(file);
+
+    apply_mode(path, mode);
 
     rmp_proto::write_message(
         send,
@@ -144,6 +190,7 @@ async fn refuse(send: &mut SendStream, reason: &str) -> Result<()> {
             ok: false,
             size: 0,
             reason: Some(reason.to_string()),
+            mode: 0,
         }),
     )
     .await?;
@@ -163,5 +210,12 @@ mod tests {
     fn relative_paths_use_home() {
         std::env::set_var("HOME", "/home/tester");
         assert_eq!(resolve("file.txt"), PathBuf::from("/home/tester/file.txt"));
+    }
+
+    #[test]
+    fn tilde_expands_to_home() {
+        std::env::set_var("HOME", "/home/tester");
+        assert_eq!(resolve("~"), PathBuf::from("/home/tester"));
+        assert_eq!(resolve("~/bin/x"), PathBuf::from("/home/tester/bin/x"));
     }
 }

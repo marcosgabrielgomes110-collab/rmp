@@ -143,8 +143,10 @@ rmp cp dev@host:/etc/hosts ./hosts.txt
 # porta remota diferente do padrão (2222)
 rmp cp --port 3333 ./x dev@host:/tmp/x
 ```
-Um lado deve ser `user@host:path` (remoto); o outro é um caminho local. Caminhos relativos
-no lado remoto resolvem a partir do **home** do usuário do servidor. Gate:
+Um lado deve ser o **remoto** no formato `user@host:caminho` (dois-pontos, como no `scp`);
+o outro é um caminho local. No lado remoto, `~`/`~/...` e caminhos relativos resolvem a
+partir do **home** do usuário do servidor; caminhos absolutos são usados como estão. As
+**permissões Unix** (incl. bit de execução) são preservadas nos dois sentidos. Gate:
 `[server] allow_file_transfer` (padrão `true`).
 
 ### Login sem senha (chave de dispositivo)
@@ -193,7 +195,7 @@ Para login como **root**: `rmp init --root` (ou `rmp passwd --root` + `allow_roo
 
 ```sh
 make            # binário release (LTO + strip) em target/release/rmp
-make test       # 67 testes (unit + integração end-to-end)
+make test       # 68 testes (unit + integração end-to-end)
 make clippy     # lint (warnings = erro)
 make install    # instala em $(PREFIX)/bin
 make dist       # empacota dist/rmp-<versão>-<os>-<arch>.tar.gz

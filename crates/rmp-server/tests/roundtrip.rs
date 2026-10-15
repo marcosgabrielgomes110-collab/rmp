@@ -419,6 +419,11 @@ async fn file_transfer_roundtrip() {
     // Upload a local file to the "remote" path.
     let local_src = dir.path().join("src.txt");
     std::fs::write(&local_src, payload).unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&local_src, std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
     let remote = dir.path().join("uploaded.txt");
     let remote_str = remote.to_str().unwrap();
 
@@ -434,6 +439,16 @@ async fn file_transfer_roundtrip() {
         .expect("download");
     assert_eq!(got as usize, payload.len());
     assert_eq!(std::fs::read(&local_out).unwrap(), payload);
+
+    // The executable bit is preserved in both directions (Unix).
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let up = std::fs::metadata(&remote).unwrap().permissions().mode();
+        let down = std::fs::metadata(&local_out).unwrap().permissions().mode();
+        assert_ne!(up & 0o111, 0, "remote upload must be executable");
+        assert_ne!(down & 0o111, 0, "downloaded file must be executable");
+    }
 }
 
 #[tokio::test]
