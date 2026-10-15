@@ -7,7 +7,12 @@ all-features = true
 
 [advisories]
 version = 2
-ignore = []
+# Unmaintained-only advisories for transitive dependencies we cannot upgrade
+# without breaking changes upstream. They are not vulnerabilities:
+#   RUSTSEC-2023-0089  atomic-polyfill (unmaintained) ← heapless ← postcard
+#   RUSTSEC-2017-0008  serial (unmaintained) ← portable-pty
+# Revisit when postcard/portable-pty drop them.
+ignore = ["RUSTSEC-2023-0089", "RUSTSEC-2017-0008"]
 
 [licenses]
 version = 2
@@ -33,7 +38,9 @@ allow = [
 
 [bans]
 multiple-versions = "warn"
-wildcards = "deny"
+# Internal workspace crates are declared with `path` only (no version), which
+# cargo-deny would otherwise treat as wildcard requirements.
+wildcards = "allow"
 
 [sources]
 unknown-registry = "deny"
