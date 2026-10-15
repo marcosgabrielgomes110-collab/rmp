@@ -80,6 +80,7 @@ pub async fn run(layout: &Layout, listen_override: Option<String>) -> Result<()>
     opts.denied_cidrs = denied;
     opts.log_commands = config.logging.log_commands;
     opts.max_sessions = config.server.max_sessions;
+    opts.allow_local_forward = config.server.allow_local_forward;
 
     let listen = listen_override.unwrap_or(config.server.listen.clone());
     let addr: SocketAddr = listen

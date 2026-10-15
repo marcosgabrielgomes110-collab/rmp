@@ -80,6 +80,7 @@ sequenceDiagram
 | Anti-MITM | Pinning de **fingerprint** (Ed25519, TOFU/`known_hosts`) |
 | Senha nunca exposta | **OPAQUE (RFC 9807)**; servidor guarda registro resistente a ataque offline |
 | Login sem senha | **Chave de dispositivo Ed25519**; o servidor assina/verifica um nonce (sem replay) |
+| Port forwarding | Túneis `-L` sobre streams QUIC (gate `[server] allow_local_forward`) |
 | Anti-brute-force | Rate limit + lockout por IP |
 | Controle de acesso | Allow/deny por **CIDR** |
 | Segredos em disco | Diretórios `0700`, arquivos `0600`, `zeroize` em memória |
@@ -113,6 +114,17 @@ rmp init --root              # habilita login root (requer o serve rodando como 
 rmp passwd                   # troca a senha do usuário
 rmp connect alice@host --accept-new
 ```
+
+### Port forwarding
+
+```sh
+# Encaminha a porta local 8080 para 10.0.0.5:80 visto a partir do servidor:
+rmp connect alice@host -L 8080:10.0.0.5:80
+
+# Só o túnel, sem shell (estilo `ssh -N`):
+rmp connect alice@host -N -L 8080:10.0.0.5:80
+```
+O servidor controla com `[server] allow_local_forward` (padrão `true`).
 
 ### Login sem senha (chave de dispositivo)
 
@@ -160,7 +172,7 @@ Para login como **root**: `rmp init --root` (ou `rmp passwd --root` + `allow_roo
 
 ```sh
 make            # binário release (LTO + strip) em target/release/rmp
-make test       # 53 testes (unit + integração end-to-end)
+make test       # 54 testes (unit + integração end-to-end)
 make clippy     # lint (warnings = erro)
 make install    # instala em $(PREFIX)/bin
 make dist       # empacota dist/rmp-<versão>-<os>-<arch>.tar.gz

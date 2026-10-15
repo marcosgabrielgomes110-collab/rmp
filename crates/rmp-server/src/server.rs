@@ -1,7 +1,7 @@
 //! Server configuration and QUIC listener.
 
 use crate::audit::audit;
-use crate::auth::{self, AuthLimiter, Principal};
+use crate::auth::{self, AuthLimiter, Authed, Principal};
 use crate::net::Cidr;
 use crate::session;
 use anyhow::{Context, Result};
@@ -54,6 +54,8 @@ pub struct ServerOptions {
     pub denied_cidrs: Vec<Cidr>,
     /// Whether executed commands are written to the audit log.
     pub log_commands: bool,
+    /// Allow clients to open local port forwards (`rmp connect -L`).
+    pub allow_local_forward: bool,
     /// Maximum number of concurrent sessions.
     pub max_sessions: usize,
     /// Live session counter.
@@ -100,6 +102,7 @@ impl ServerOptions {
             allowed_cidrs: Vec::new(),
             denied_cidrs: Vec::new(),
             log_commands: true,
+            allow_local_forward: true,
             max_sessions: 8,
             sessions: AtomicUsize::new(0),
         }
@@ -309,45 +312,47 @@ async fn handle_connection(
         return Ok(());
     };
 
-    // Session concurrency limit.
-    let already = opts.sessions.fetch_add(1, Ordering::SeqCst);
-    if already >= opts.max_sessions {
-        opts.sessions.fetch_sub(1, Ordering::SeqCst);
-        audit!(event = "session.refused", peer = %peer, reason = "max_sessions");
-        let _ = conn.closed().await;
-        return Ok(());
+    // Serve streams (sessions and forwards) until the connection closes.
+    let mut tasks = tokio::task::JoinSet::new();
+    while let Ok((send, recv)) = conn.accept_bi().await {
+        let opts = opts.clone();
+        let authed = authed.clone();
+        tasks.spawn(async move {
+            if let Err(e) = handle_stream(send, recv, opts, authed, peer).await {
+                warn!(%peer, error = %e, "stream ended with error");
+            }
+        });
     }
-    let _session_guard = SessionGuard(&opts.sessions);
+    while tasks.join_next().await.is_some() {}
 
-    let (mut ssend, mut srecv) = match conn.accept_bi().await {
-        Ok(streams) => streams,
-        Err(e) => {
-            info!(%peer, "client disconnected before opening a session: {e}");
-            audit!(event = "session.none", peer = %peer, reason = %e);
-            return Ok(());
-        }
-    };
+    audit!(event = "connection.close", peer = %peer);
+    Ok(())
+}
 
-    let first = rmp_proto::read_message(&mut srecv)
+async fn handle_stream(
+    mut send: quinn::SendStream,
+    mut recv: quinn::RecvStream,
+    opts: Arc<ServerOptions>,
+    authed: Authed,
+    peer: SocketAddr,
+) -> Result<()> {
+    let first = rmp_proto::read_message(&mut recv)
         .await
-        .context("reading session request")?;
-
-    let (program, args) = opts.spawn_for(authed.principal);
+        .context("reading stream request")?;
 
     match first {
         Message::PtyRequest(req) => {
-            audit!(
-                event = "session.open",
-                peer = %peer,
-                kind = "pty",
-                as_root = matches!(authed.principal, Principal::Root),
-                term = %req.term,
-                cols = req.cols,
-                rows = req.rows
-            );
+            let Some(_guard) = acquire_session(&opts) else {
+                audit!(event = "session.refused", peer = %peer, reason = "max_sessions");
+                return Ok(());
+            };
+            let (program, args) = opts.spawn_for(authed.principal);
+            audit!(event = "session.open", peer = %peer, kind = "pty",
+                   as_root = matches!(authed.principal, Principal::Root),
+                   term = %req.term, cols = req.cols, rows = req.rows);
             let code = session::run_pty(
-                &mut ssend,
-                &mut srecv,
+                &mut send,
+                &mut recv,
                 req,
                 &program,
                 &args,
@@ -357,28 +362,51 @@ async fn handle_connection(
             audit!(event = "session.close", peer = %peer, kind = "pty", exit_code = code);
         }
         Message::Exec(exec) => {
+            let Some(_guard) = acquire_session(&opts) else {
+                audit!(event = "session.refused", peer = %peer, reason = "max_sessions");
+                return Ok(());
+            };
+            let (program, args) = opts.spawn_for(authed.principal);
             let logged = if opts.log_commands {
                 exec.command.clone()
             } else {
                 "<redacted>".to_string()
             };
-            audit!(
-                event = "session.open",
-                peer = %peer,
-                kind = "exec",
-                as_root = matches!(authed.principal, Principal::Root),
-                command = %logged
-            );
+            audit!(event = "session.open", peer = %peer, kind = "exec",
+                   as_root = matches!(authed.principal, Principal::Root), command = %logged);
             let code =
-                session::run_exec(&mut ssend, &mut srecv, &exec.command, &program, &args).await?;
+                session::run_exec(&mut send, &mut recv, &exec.command, &program, &args).await?;
             audit!(event = "session.close", peer = %peer, kind = "exec", exit_code = code);
         }
+        Message::ForwardRequest(req) => {
+            if !opts.allow_local_forward {
+                audit!(event = "forward.refused", peer = %peer, reason = "disabled");
+                let _ = rmp_proto::write_message(
+                    &mut send,
+                    &Message::ForwardResponse(rmp_proto::ForwardResponse {
+                        ok: false,
+                        reason: Some("forwarding is disabled".into()),
+                    }),
+                )
+                .await;
+                return Ok(());
+            }
+            crate::forward::serve(send, recv, req, peer).await?;
+        }
         other => {
-            anyhow::bail!("unexpected first session message: {:?}", other.frame_type());
+            anyhow::bail!("unexpected stream request: {:?}", other.frame_type());
         }
     }
-
-    audit!(event = "connection.close", peer = %peer);
-    let _ = conn.closed().await;
     Ok(())
+}
+
+/// Reserve a session slot, or return `None` if the limit is reached.
+fn acquire_session(opts: &ServerOptions) -> Option<SessionGuard<'_>> {
+    let already = opts.sessions.fetch_add(1, Ordering::SeqCst);
+    if already >= opts.max_sessions {
+        opts.sessions.fetch_sub(1, Ordering::SeqCst);
+        None
+    } else {
+        Some(SessionGuard(&opts.sessions))
+    }
 }

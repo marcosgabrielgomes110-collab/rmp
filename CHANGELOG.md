@@ -9,16 +9,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- **Device-key enrollment and passwordless login.** After a successful password login a
-  client may enroll an Ed25519 device key (stored server-side in `authorized_keys`,
-  `0600`). Subsequent logins authenticate by signing a fresh server nonce
-  (`KeyAuthRequest` → `KeyAuthChallenge` → `KeyAuthProof`), bound to the account and key.
-  Controlled by `[auth] allow_key_auth` / `allow_key_enrollment` and
-  `[client] enable_key_auth` / `offer_enrollment`.
+- **Local port forwarding (`rmp connect -L [bind:]port:host:hostport`, `-N`).** Each
+  accepted TCP connection is tunnelled over a dedicated QUIC stream; the server dials the
+  target and pipes bytes (`ForwardRequest`/`ForwardResponse` + `Data`). Gated by
+  `[server] allow_local_forward`. The server now serves multiple concurrent streams per
+  connection (sessions and forwards).
 
 ### Planned
 
-- Port forwarding and file transfer (SFTP-like channel).
+- Remote port forwarding (`-R`; `RemoteForwardBind` is already sketched in the protocol).
+- File transfer (SFTP-like channel).
 - Fuzzing of the wire format and 0-RTT resumption.
 
 ## [0.1.0] - 2026-10-12

@@ -95,7 +95,6 @@ A assinatura cobre [`key_auth_context`] = `"rmp-keyauth-v1" ‖ len(user) ‖ us
 não vazar a existência de chaves.
 
 ### 4.3 Controle de canais
-
 | Código | Mensagem | Campos |
 |---|---|---|
 | `0x20` | `ChannelOpen` | `channel_id: u32`, `kind: ChannelKind` |
@@ -133,6 +132,23 @@ Stream bidi iniciado pelo cliente, com `channel_id` no preâmbulo.
 
 Entrega do PTY: `Data` (servidor→cliente) = stdout; não há separação stderr no modo PTY
 (o terminal mescla; separação fica no modo `Exec`).
+
+## 5.1 Port forwarding
+
+Uma stream dedicada de encaminhamento começa com `ForwardRequest`. O lado que **recebe**
+a mensagem é o que **disca** a conexão TCP de destino; ele responde `ForwardResponse` e
+os bytes passam a fluir em ambos os sentidos como mensagens `Data` (fim de direção =
+`Eof`).
+
+| Código | Mensagem | Direção | Campos |
+|---|---|---|---|
+| `0x50` | `ForwardRequest` | quem pede → quem disca | `host: string`, `port: u16` |
+| `0x51` | `ForwardResponse` | quem disca → quem pede | `ok: bool`, `reason?: string` |
+
+Fluxo `rmp connect -L port:host:port` (`-L`): o **cliente** cria o `TcpListener` local;
+a cada conexão ele abre uma stream, envia `ForwardRequest{host,port}`; o **servidor**
+disca `host:port`, responde `ForwardResponse{ok}` e faz o pipe.
+(`0x34`/`0x35` — `RemoteForwardBind`/`Result` — ficam reservados para `-R`.)
 
 ## 6. Fluxo de controle (flow control)
 

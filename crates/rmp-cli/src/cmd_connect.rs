@@ -69,6 +69,8 @@ pub async fn run(
     layout: &Layout,
     accept_new_flag: bool,
     idle_override: Option<u64>,
+    forwards: Vec<String>,
+    no_shell: bool,
 ) -> Result<i32> {
     let _ = layout.ensure_config();
     let config = FileConfig::load_or_default(&layout.config_file()).unwrap_or_default();
@@ -129,7 +131,7 @@ pub async fn run(
             Ok(client) => {
                 tracing::info!(target: AUDIT_TARGET, event = "auth.success", host = %key,
                                user = %target.user, method = "key");
-                return session(client, &key).await;
+                return finish(client, &key, &forwards, no_shell).await;
             }
             Err(e) => {
                 tracing::warn!(target: AUDIT_TARGET, event = "auth.key_rejected", host = %key, error = %e);
@@ -178,7 +180,65 @@ pub async fn run(
 
     tracing::info!(target: AUDIT_TARGET, event = "auth.success", host = %key,
                    user = %target.user, method = "password");
-    session(client, &key).await
+    finish(client, &key, &forwards, no_shell).await
+}
+
+/// Start local forwards and either run a shell or just keep forwarding.
+async fn finish(client: Client, key: &str, forwards: &[String], no_shell: bool) -> Result<i32> {
+    if !forwards.is_empty() {
+        let conn = client.connection().clone();
+        for spec in forwards {
+            let (bind, host, port) = parse_forward(spec)?;
+            let listener = tokio::net::TcpListener::bind(bind)
+                .await
+                .with_context(|| format!("binding local forward {bind}"))?;
+            let actual = listener.local_addr().unwrap_or(bind);
+            eprintln!("[rmp] forwarding {actual} -> {host}:{port}");
+            let conn = conn.clone();
+            tracing::info!(target: AUDIT_TARGET, event = "forward.start", bind = %actual,
+                           target = %format!("{host}:{port}"));
+            tokio::spawn(async move {
+                if let Err(e) = rmp_client::local_forward(conn, listener, host, port).await {
+                    eprintln!("[rmp] forward {actual} failed: {e}");
+                }
+            });
+        }
+    }
+
+    if no_shell {
+        eprintln!("[rmp] forwarding only; press Ctrl-C to stop.");
+        let _ = tokio::signal::ctrl_c().await;
+        tracing::info!(target: AUDIT_TARGET, event = "session.end", host = %key, exit_code = 0);
+        return Ok(0);
+    }
+    session(client, key).await
+}
+
+/// Parse `[bind_address:]port:host:hostport` into a bind address and target.
+fn parse_forward(spec: &str) -> Result<(SocketAddr, String, u16)> {
+    let parts: Vec<&str> = spec.split(':').collect();
+    let (bind_ip, local_port, host, host_port) = match parts.as_slice() {
+        [p, h, hp] => (
+            "127.0.0.1".to_string(),
+            p.parse::<u16>().context("invalid local port")?,
+            h.to_string(),
+            hp.parse::<u16>().context("invalid host port")?,
+        ),
+        [b, p, h, hp] => (
+            b.to_string(),
+            p.parse::<u16>().context("invalid local port")?,
+            h.to_string(),
+            hp.parse::<u16>().context("invalid host port")?,
+        ),
+        _ => bail!("forward spec must be [bind_address:]port:host:hostport"),
+    };
+    if host.is_empty() {
+        bail!("forward spec is missing the target host");
+    }
+    let bind: SocketAddr = format!("{bind_ip}:{local_port}")
+        .parse()
+        .context("invalid forward bind address")?;
+    Ok((bind, host, host_port))
 }
 
 /// Establish the transport and verify the server fingerprint (TOFU/pinning).

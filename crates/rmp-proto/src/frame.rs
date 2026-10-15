@@ -199,6 +199,22 @@ mod tests {
             core_dumped: false,
             message: "terminated".into(),
         }));
+        roundtrip(Message::ForwardRequest(ForwardRequest {
+            host: "localhost".into(),
+            port: 8080,
+        }));
+        roundtrip(Message::ForwardResponse(ForwardResponse {
+            ok: false,
+            reason: Some("connection refused".into()),
+        }));
+        roundtrip(Message::RemoteForwardBind(RemoteForwardBind {
+            bind_port: 9000,
+        }));
+        roundtrip(Message::RemoteForwardBindResult(RemoteForwardBindResult {
+            ok: true,
+            bound_port: 9000,
+            reason: None,
+        }));
     }
 
     #[test]

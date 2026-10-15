@@ -18,6 +18,8 @@ shell = ""
 motd = ""
 # Maximum number of simultaneous sessions.
 max_sessions = 8
+# Allow clients to open local port forwards (rmp connect -L).
+allow_local_forward = true
 
 [auth]
 # Master switch for password authentication. false → nobody can log in.

@@ -262,3 +262,64 @@ async fn key_auth_disabled_rejects_key() {
     let result = transport.authenticate_key(USER, &device).await;
     assert!(result.is_err(), "key auth disabled must reject keys");
 }
+
+#[tokio::test]
+async fn local_port_forward_roundtrip() {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    use tokio::net::{TcpListener, TcpStream};
+
+    let h = start_server().await;
+    let opts = client_opts(&h, Some(h.fingerprint));
+    let client = Client::connect(&opts, USER, PASSWORD.as_bytes())
+        .await
+        .unwrap();
+
+    // A TCP echo server, reachable from the server side (same host here).
+    let echo = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let echo_port = echo.local_addr().unwrap().port();
+    tokio::spawn(async move {
+        while let Ok((mut sock, _)) = echo.accept().await {
+            tokio::spawn(async move {
+                let mut buf = [0u8; 1024];
+                loop {
+                    match sock.read(&mut buf).await {
+                        Ok(0) | Err(_) => break,
+                        Ok(n) => {
+                            if sock.write_all(&buf[..n]).await.is_err() {
+                                break;
+                            }
+                        }
+                    }
+                }
+            });
+        }
+    });
+
+    // Set up the local forward (bind an ephemeral port so we know it).
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let local_port = listener.local_addr().unwrap().port();
+    let conn = client.connection().clone();
+    tokio::spawn(rmp_client::local_forward(
+        conn,
+        listener,
+        "127.0.0.1".to_string(),
+        echo_port,
+    ));
+
+    // Send data through the tunnel and expect it echoed back.
+    let mut tun = tokio::time::timeout(
+        Duration::from_secs(5),
+        TcpStream::connect(("127.0.0.1", local_port)),
+    )
+    .await
+    .expect("no timeout")
+    .expect("connect through tunnel");
+
+    tun.write_all(b"ping-through-rmp").await.unwrap();
+    let mut buf = vec![0u8; 64];
+    let n = tokio::time::timeout(Duration::from_secs(5), tun.read(&mut buf))
+        .await
+        .expect("no timeout")
+        .expect("read echo");
+    assert_eq!(&buf[..n], b"ping-through-rmp");
+}

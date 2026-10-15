@@ -189,6 +189,14 @@ connect_timeout_secs = 10
 idle_timeout_secs = 600
 ```
 
+### Port forwarding
+
+Uma stream de encaminhamento começa com `ForwardRequest`; o lado que recebe a mensagem
+disca a conexão TCP de destino, responde `ForwardResponse{ok}` e então transporta os bytes
+em ambos os sentidos via mensagens `Data` (terminadas por `Eof`). Em `rmp connect -L
+port:host:port`, o cliente cria o listener TCP local e o servidor abre a conexão de
+destino. O servidor pode desligar isso com `[server] allow_local_forward`.
+
 ### Modo root
 
 Com `[auth] allow_root = true`, o servidor **exige rodar como root** (senão recusa

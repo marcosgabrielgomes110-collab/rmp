@@ -109,6 +109,12 @@ enum Command {
         /// Accept an unknown host key without prompting.
         #[arg(long)]
         accept_new: bool,
+        /// Local forward: `[bind_address:]port:host:hostport` (repeatable).
+        #[arg(short = 'L', long = "local-forward", value_name = "SPEC")]
+        local_forward: Vec<String>,
+        /// Do not open a shell; only keep forwards running.
+        #[arg(short = 'N', long = "no-shell")]
+        no_shell: bool,
         /// QUIC idle timeout in seconds (overrides the config).
         #[arg(long)]
         idle_timeout: Option<u64>,
@@ -151,13 +157,22 @@ fn main() -> Result<()> {
             target,
             dirs,
             accept_new,
+            local_forward,
+            no_shell,
             idle_timeout,
         } => {
             let layout = dirs.resolve()?;
             let rt = tokio::runtime::Builder::new_multi_thread()
                 .enable_all()
                 .build()?;
-            let code = rt.block_on(cmd_connect::run(&target, &layout, accept_new, idle_timeout))?;
+            let code = rt.block_on(cmd_connect::run(
+                &target,
+                &layout,
+                accept_new,
+                idle_timeout,
+                local_forward,
+                no_shell,
+            ))?;
             std::process::exit(code);
         }
         Command::Passwd { dirs, user, root } => {

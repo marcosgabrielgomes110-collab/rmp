@@ -59,6 +59,8 @@ pub enum FrameType {
     Pong = 0x31,
     Disconnect = 0x32,
     GoAway = 0x33,
+    RemoteForwardBind = 0x34,
+    RemoteForwardBindResult = 0x35,
     // Session channel (0x4_)
     PtyRequest = 0x40,
     Shell = 0x41,
@@ -70,6 +72,9 @@ pub enum FrameType {
     Eof = 0x47,
     ExitStatus = 0x48,
     ExitSignal = 0x49,
+    // Port forwarding (0x5_)
+    ForwardRequest = 0x50,
+    ForwardResponse = 0x51,
 }
 
 impl FrameType {
@@ -98,6 +103,8 @@ impl FrameType {
             0x31 => Pong,
             0x32 => Disconnect,
             0x33 => GoAway,
+            0x34 => RemoteForwardBind,
+            0x35 => RemoteForwardBindResult,
             0x40 => PtyRequest,
             0x41 => Shell,
             0x42 => Exec,
@@ -108,18 +115,20 @@ impl FrameType {
             0x47 => Eof,
             0x48 => ExitStatus,
             0x49 => ExitSignal,
+            0x50 => ForwardRequest,
+            0x51 => ForwardResponse,
             other => return Err(ProtoError::UnknownType(other)),
         })
     }
 
     /// Whether this message may appear on the control stream.
     pub const fn is_control(self) -> bool {
-        matches!(self.as_u8(), 0x01..=0x33)
+        matches!(self.as_u8(), 0x01..=0x3F)
     }
 
-    /// Whether this message may appear on a session stream.
+    /// Whether this message may appear on a session or forwarding stream.
     pub const fn is_session(self) -> bool {
-        matches!(self.as_u8(), 0x40..=0x49)
+        matches!(self.as_u8(), 0x40..=0x6F)
     }
 }
 
@@ -360,6 +369,42 @@ pub struct ExitSignal {
 }
 
 // ---------------------------------------------------------------------------
+// Port forwarding
+// ---------------------------------------------------------------------------
+
+/// Ask the peer to connect to `host:port` and pipe the stream to it.
+///
+/// Sent at the start of a dedicated forwarding stream. The receiver of this
+/// message is the side that dials the TCP connection.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ForwardRequest {
+    pub host: String,
+    pub port: u16,
+}
+
+/// Whether the peer managed to connect to the requested target.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ForwardResponse {
+    pub ok: bool,
+    pub reason: Option<String>,
+}
+
+/// Client asks the server to listen on `bind_port` (127.0.0.1) and forward
+/// incoming connections back to the client.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RemoteForwardBind {
+    pub bind_port: u16,
+}
+
+/// Server's answer to [`RemoteForwardBind`].
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RemoteForwardBindResult {
+    pub ok: bool,
+    pub bound_port: u16,
+    pub reason: Option<String>,
+}
+
+// ---------------------------------------------------------------------------
 // Unified message enum
 // ---------------------------------------------------------------------------
 
@@ -384,6 +429,8 @@ pub enum Message {
     Pong(Pong),
     Disconnect(Disconnect),
     GoAway(GoAway),
+    RemoteForwardBind(RemoteForwardBind),
+    RemoteForwardBindResult(RemoteForwardBindResult),
     PtyRequest(PtyRequest),
     Shell,
     Exec(Exec),
@@ -394,6 +441,8 @@ pub enum Message {
     Eof,
     ExitStatus(ExitStatus),
     ExitSignal(ExitSignal),
+    ForwardRequest(ForwardRequest),
+    ForwardResponse(ForwardResponse),
 }
 
 impl Message {
@@ -419,6 +468,8 @@ impl Message {
             Pong(_) => FrameType::Pong,
             Disconnect(_) => FrameType::Disconnect,
             GoAway(_) => FrameType::GoAway,
+            RemoteForwardBind(_) => FrameType::RemoteForwardBind,
+            RemoteForwardBindResult(_) => FrameType::RemoteForwardBindResult,
             PtyRequest(_) => FrameType::PtyRequest,
             Shell => FrameType::Shell,
             Exec(_) => FrameType::Exec,
@@ -429,6 +480,8 @@ impl Message {
             Eof => FrameType::Eof,
             ExitStatus(_) => FrameType::ExitStatus,
             ExitSignal(_) => FrameType::ExitSignal,
+            ForwardRequest(_) => FrameType::ForwardRequest,
+            ForwardResponse(_) => FrameType::ForwardResponse,
         }
     }
 
