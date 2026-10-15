@@ -164,6 +164,24 @@ controle; o servidor faz bind em `127.0.0.1:port` e responde `RemoteForwardBindR
 A cada conexão no bind, o **servidor** abre uma stream e envia
 `ForwardRequest{host,port}`; o **cliente** disca o alvo (lado do cliente) e faz o pipe.
 
+## 5.2 File transfer
+
+Uma stream de arquivo começa com `FileRequest`; o servidor responde `FileResponse` e os
+bytes fluem como `Data` (terminados por `Eof`). Caminhos relativos resolvem a partir do
+home do usuário do servidor.
+
+| Código | Mensagem | Direção | Campos |
+|---|---|---|---|
+| `0x60` | `FileRequest` | C→S | `op: FileOp (Get=0/Put=1)`, `path: string` |
+| `0x61` | `FileResponse` | S→C | `ok: bool`, `size: u64`, `reason?: string` |
+
+- **Get** (download): `FileRequest{Get}` → `FileResponse{ok,size}` → `Data`… → `Eof`.
+- **Put** (upload): `FileRequest{Put}` → `FileResponse{ok}` → `Data`… → `Eof` →
+  `ExitStatus{0}` (confirmação do servidor).
+
+Erros (path inválido, sem permissão, etc.) retornam `FileResponse{ok:false, reason}` e a
+stream é encerrada. Gate no servidor: `[server] allow_file_transfer`.
+
 ## 6. Fluxo de controle (flow control)
 
 - Além do flow control nativo do QUIC, há uma janela por canal (`WindowAdjust`) para

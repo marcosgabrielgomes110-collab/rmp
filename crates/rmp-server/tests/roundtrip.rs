@@ -17,13 +17,14 @@ struct Harness {
 }
 
 async fn start_server() -> Harness {
-    start_server_with(true, true, false).await
+    start_server_with(true, true, false, true).await
 }
 
 async fn start_server_with(
     allow_key_auth: bool,
     allow_key_enrollment: bool,
     allow_remote_forward: bool,
+    allow_file_transfer: bool,
 ) -> Harness {
     let host_key = crypto::HostKey::generate().unwrap();
     let fingerprint = host_key.fingerprint();
@@ -45,6 +46,7 @@ async fn start_server_with(
     opts.allow_key_auth = allow_key_auth;
     opts.allow_key_enrollment = allow_key_enrollment;
     opts.allow_remote_forward = allow_remote_forward;
+    opts.allow_file_transfer = allow_file_transfer;
     opts.authorized_keys_path = authorized_keys.clone();
 
     let endpoint = bind("127.0.0.1:0".parse().unwrap(), &opts).unwrap();
@@ -236,7 +238,7 @@ async fn unknown_device_key_is_rejected() {
 
 #[tokio::test]
 async fn enrollment_disabled_does_not_store_key() {
-    let h = start_server_with(true, false, false).await;
+    let h = start_server_with(true, false, false, true).await;
     let opts = client_opts(&h, Some(h.fingerprint));
 
     let device = rmp_client::DeviceKey::generate();
@@ -259,7 +261,7 @@ async fn enrollment_disabled_does_not_store_key() {
 
 #[tokio::test]
 async fn key_auth_disabled_rejects_key() {
-    let h = start_server_with(false, true, false).await;
+    let h = start_server_with(false, true, false, true).await;
     let opts = client_opts(&h, Some(h.fingerprint));
     let device = rmp_client::DeviceKey::generate();
 
@@ -335,7 +337,7 @@ async fn remote_port_forward_roundtrip() {
     use tokio::net::{TcpListener, TcpStream};
 
     // Server that allows -R.
-    let h = start_server_with(true, true, true).await;
+    let h = start_server_with(true, true, true, true).await;
     let opts = client_opts(&h, Some(h.fingerprint));
     let mut client = Client::connect(&opts, USER, PASSWORD.as_bytes())
         .await
@@ -401,4 +403,67 @@ async fn remote_forward_disabled_is_refused() {
 
     let result = client.request_remote_forward(0, "127.0.0.1", 9).await;
     assert!(result.is_err(), "remote forwarding must be refused");
+}
+
+#[tokio::test]
+async fn file_transfer_roundtrip() {
+    let h = start_server().await;
+    let opts = client_opts(&h, Some(h.fingerprint));
+    let client = Client::connect(&opts, USER, PASSWORD.as_bytes())
+        .await
+        .unwrap();
+
+    let dir = tempfile::tempdir().unwrap();
+    let payload = b"hello file transfer over rmp";
+
+    // Upload a local file to the "remote" path.
+    let local_src = dir.path().join("src.txt");
+    std::fs::write(&local_src, payload).unwrap();
+    let remote = dir.path().join("uploaded.txt");
+    let remote_str = remote.to_str().unwrap();
+
+    let sent = client.upload(&local_src, remote_str).await.expect("upload");
+    assert_eq!(sent as usize, payload.len());
+    assert_eq!(std::fs::read(&remote).unwrap(), payload);
+
+    // Download it back to a different local file.
+    let local_out = dir.path().join("downloaded.txt");
+    let got = client
+        .download(remote_str, &local_out)
+        .await
+        .expect("download");
+    assert_eq!(got as usize, payload.len());
+    assert_eq!(std::fs::read(&local_out).unwrap(), payload);
+}
+
+#[tokio::test]
+async fn download_missing_file_is_refused() {
+    let h = start_server().await;
+    let opts = client_opts(&h, Some(h.fingerprint));
+    let client = Client::connect(&opts, USER, PASSWORD.as_bytes())
+        .await
+        .unwrap();
+
+    let dir = tempfile::tempdir().unwrap();
+    let out = dir.path().join("out.txt");
+    let res = client.download("/no/such/file/rmp-test-xyz", &out).await;
+    assert!(res.is_err(), "missing file must be refused");
+    assert!(!out.exists(), "no local file should be created on refusal");
+}
+
+#[tokio::test]
+async fn file_transfer_disabled_is_refused() {
+    // allow_file_transfer = false
+    let h = start_server_with(true, true, false, false).await;
+    let opts = client_opts(&h, Some(h.fingerprint));
+    let client = Client::connect(&opts, USER, PASSWORD.as_bytes())
+        .await
+        .unwrap();
+
+    let dir = tempfile::tempdir().unwrap();
+    let local = dir.path().join("x.txt");
+    std::fs::write(&local, b"x").unwrap();
+    let remote = dir.path().join("y.txt");
+    let res = client.upload(&local, remote.to_str().unwrap()).await;
+    assert!(res.is_err(), "file transfer must be refused when disabled");
 }

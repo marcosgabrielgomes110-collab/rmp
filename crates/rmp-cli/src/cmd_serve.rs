@@ -82,6 +82,7 @@ pub async fn run(layout: &Layout, listen_override: Option<String>) -> Result<()>
     opts.max_sessions = config.server.max_sessions;
     opts.allow_local_forward = config.server.allow_local_forward;
     opts.allow_remote_forward = config.server.allow_remote_forward;
+    opts.allow_file_transfer = config.server.allow_file_transfer;
 
     let listen = listen_override.unwrap_or(config.server.listen.clone());
     let addr: SocketAddr = listen

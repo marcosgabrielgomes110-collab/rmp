@@ -58,6 +58,8 @@ pub struct ServerOptions {
     pub allow_local_forward: bool,
     /// Allow clients to request remote port forwards (`rmp connect -R`).
     pub allow_remote_forward: bool,
+    /// Allow file transfer (`rmp cp`).
+    pub allow_file_transfer: bool,
     /// Maximum number of concurrent sessions.
     pub max_sessions: usize,
     /// Live session counter.
@@ -106,6 +108,7 @@ impl ServerOptions {
             log_commands: true,
             allow_local_forward: true,
             allow_remote_forward: false,
+            allow_file_transfer: true,
             max_sessions: 8,
             sessions: AtomicUsize::new(0),
         }
@@ -404,6 +407,22 @@ async fn handle_stream(
                 return Ok(());
             }
             crate::forward::serve(send, recv, req, peer).await?;
+        }
+        Message::FileRequest(req) => {
+            if !opts.allow_file_transfer {
+                audit!(event = "file.refused", peer = %peer, reason = "disabled");
+                let _ = rmp_proto::write_message(
+                    &mut send,
+                    &Message::FileResponse(rmp_proto::FileResponse {
+                        ok: false,
+                        size: 0,
+                        reason: Some("file transfer is disabled".into()),
+                    }),
+                )
+                .await;
+                return Ok(());
+            }
+            crate::files::serve(send, recv, req, peer).await?;
         }
         other => {
             anyhow::bail!("unexpected stream request: {:?}", other.frame_type());

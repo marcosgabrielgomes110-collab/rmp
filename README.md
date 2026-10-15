@@ -131,6 +131,22 @@ rmp connect alice@host -N -L 8080:10.0.0.5:80 -R 9090:127.0.0.1:5432
 Controle no servidor: `[server] allow_local_forward` (padrão `true`) e
 `[server] allow_remote_forward` (padrão `false`; `-R` sempre liga em `127.0.0.1`).
 
+### Transferência de arquivos
+
+```sh
+# enviar (upload): local -> remoto
+rmp cp ./relatorio.pdf dev@host:/tmp/relatorio.pdf
+
+# baixar (download): remoto -> local
+rmp cp dev@host:/etc/hosts ./hosts.txt
+
+# porta remota diferente do padrão (2222)
+rmp cp --port 3333 ./x dev@host:/tmp/x
+```
+Um lado deve ser `user@host:path` (remoto); o outro é um caminho local. Caminhos relativos
+no lado remoto resolvem a partir do **home** do usuário do servidor. Gate:
+`[server] allow_file_transfer` (padrão `true`).
+
 ### Login sem senha (chave de dispositivo)
 
 No **primeiro** acesso por senha, o cliente oferece registrar uma chave **Ed25519** deste
@@ -177,7 +193,7 @@ Para login como **root**: `rmp init --root` (ou `rmp passwd --root` + `allow_roo
 
 ```sh
 make            # binário release (LTO + strip) em target/release/rmp
-make test       # 57 testes (unit + integração end-to-end)
+make test       # 64 testes (unit + integração end-to-end)
 make clippy     # lint (warnings = erro)
 make install    # instala em $(PREFIX)/bin
 make dist       # empacota dist/rmp-<versão>-<os>-<arch>.tar.gz

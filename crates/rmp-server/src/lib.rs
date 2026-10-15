@@ -6,6 +6,7 @@
 #![forbid(unsafe_code)]
 
 pub mod auth;
+pub mod files;
 pub mod forward;
 pub mod keys;
 pub mod net;

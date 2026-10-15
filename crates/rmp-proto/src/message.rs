@@ -75,6 +75,9 @@ pub enum FrameType {
     // Port forwarding (0x5_)
     ForwardRequest = 0x50,
     ForwardResponse = 0x51,
+    // File transfer (0x6_)
+    FileRequest = 0x60,
+    FileResponse = 0x61,
 }
 
 impl FrameType {
@@ -117,6 +120,8 @@ impl FrameType {
             0x49 => ExitSignal,
             0x50 => ForwardRequest,
             0x51 => ForwardResponse,
+            0x60 => FileRequest,
+            0x61 => FileResponse,
             other => return Err(ProtoError::UnknownType(other)),
         })
     }
@@ -407,6 +412,35 @@ pub struct RemoteForwardBindResult {
 }
 
 // ---------------------------------------------------------------------------
+// File transfer
+// ---------------------------------------------------------------------------
+
+/// Direction of a file transfer.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[repr(u8)]
+pub enum FileOp {
+    /// Download the file from the server.
+    Get = 0,
+    /// Upload a file to the server.
+    Put = 1,
+}
+
+/// Start a file transfer on a dedicated stream.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FileRequest {
+    pub op: FileOp,
+    pub path: String,
+}
+
+/// Response to [`FileRequest`] (initial ack); `size` is the file size for `Get`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FileResponse {
+    pub ok: bool,
+    pub size: u64,
+    pub reason: Option<String>,
+}
+
+// ---------------------------------------------------------------------------
 // Unified message enum
 // ---------------------------------------------------------------------------
 
@@ -445,6 +479,8 @@ pub enum Message {
     ExitSignal(ExitSignal),
     ForwardRequest(ForwardRequest),
     ForwardResponse(ForwardResponse),
+    FileRequest(FileRequest),
+    FileResponse(FileResponse),
 }
 
 impl Message {
@@ -484,6 +520,8 @@ impl Message {
             ExitSignal(_) => FrameType::ExitSignal,
             ForwardRequest(_) => FrameType::ForwardRequest,
             ForwardResponse(_) => FrameType::ForwardResponse,
+            FileRequest(_) => FrameType::FileRequest,
+            FileResponse(_) => FrameType::FileResponse,
         }
     }
 
@@ -556,6 +594,8 @@ impl Message {
             ExitSignal(m) => postcard::to_allocvec(m)?,
             ForwardRequest(m) => postcard::to_allocvec(m)?,
             ForwardResponse(m) => postcard::to_allocvec(m)?,
+            FileRequest(m) => postcard::to_allocvec(m)?,
+            FileResponse(m) => postcard::to_allocvec(m)?,
         };
         Ok(body)
     }
@@ -598,6 +638,8 @@ impl Message {
             ExitSignal => Message::ExitSignal(postcard::from_bytes(bytes)?),
             ForwardRequest => Message::ForwardRequest(postcard::from_bytes(bytes)?),
             ForwardResponse => Message::ForwardResponse(postcard::from_bytes(bytes)?),
+            FileRequest => Message::FileRequest(postcard::from_bytes(bytes)?),
+            FileResponse => Message::FileResponse(postcard::from_bytes(bytes)?),
         })
     }
 }

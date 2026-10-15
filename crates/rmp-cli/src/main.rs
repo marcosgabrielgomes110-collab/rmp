@@ -11,7 +11,9 @@
 
 #![forbid(unsafe_code)]
 
+mod authflow;
 mod cmd_connect;
+mod cmd_cp;
 mod cmd_init;
 mod cmd_passwd;
 mod cmd_serve;
@@ -122,6 +124,21 @@ enum Command {
         #[arg(long)]
         idle_timeout: Option<u64>,
     },
+    /// Copy a file to/from a remote machine (`user@host:path`).
+    Cp {
+        /// Source: a local path or `user@host:path`.
+        src: String,
+        /// Destination: a local path or `user@host:path`.
+        dst: String,
+        #[command(flatten)]
+        dirs: DirArgs,
+        /// Remote port.
+        #[arg(long, default_value_t = 2222)]
+        port: u16,
+        /// Accept an unknown host key without prompting.
+        #[arg(long)]
+        accept_new: bool,
+    },
     /// Set or replace the access password.
     Passwd {
         #[command(flatten)]
@@ -178,6 +195,20 @@ fn main() -> Result<()> {
                 remote_forward,
                 no_shell,
             ))?;
+            std::process::exit(code);
+        }
+        Command::Cp {
+            src,
+            dst,
+            dirs,
+            port,
+            accept_new,
+        } => {
+            let layout = dirs.resolve()?;
+            let rt = tokio::runtime::Builder::new_multi_thread()
+                .enable_all()
+                .build()?;
+            let code = rt.block_on(cmd_cp::run(&src, &dst, &layout, port, accept_new))?;
             std::process::exit(code);
         }
         Command::Passwd { dirs, user, root } => {

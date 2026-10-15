@@ -9,8 +9,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Planned
 
-- File transfer (SFTP-like channel).
 - Fuzzing of the wire format and 0-RTT resumption.
+
+## [0.3.0] - 2026-10-15
+
+### Added
+
+- **File transfer (`rmp cp <src> <dst>`).** Upload or download a file to/from
+  `user@host:path` over a dedicated QUIC stream (`FileRequest`/`FileResponse` +
+  `Data`/`Eof`); `Put` is confirmed with an `ExitStatus`. Relative paths resolve to the
+  server user's home directory. Gated by `[server] allow_file_transfer`.
 
 ## [0.2.0] - 2026-10-15
 
@@ -76,7 +84,8 @@ Initial MVP: a functional, tested, SSH-like remote shell.
 - **Logging**: rotating `rmp.log` (everything) and `audit.log` (security events only).
 - Fully commented [configuration example](config.example.toml).
 
-[Unreleased]: https://github.com/marcosgabrielgomes110-collab/rmp/compare/v0.2.0...HEAD
+[Unreleased]: https://github.com/marcosgabrielgomes110-collab/rmp/compare/v0.3.0...HEAD
+[0.3.0]: https://github.com/marcosgabrielgomes110-collab/rmp/releases/tag/v0.3.0
 [0.2.0]: https://github.com/marcosgabrielgomes110-collab/rmp/releases/tag/v0.2.0
 [0.1.1]: https://github.com/marcosgabrielgomes110-collab/rmp/releases/tag/v0.1.1
 [0.1.0]: https://github.com/marcosgabrielgomes110-collab/rmp/releases/tag/v0.1.0

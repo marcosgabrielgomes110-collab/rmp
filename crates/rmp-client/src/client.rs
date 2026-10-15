@@ -6,10 +6,11 @@ use quinn::{Connection, Endpoint, RecvStream, SendStream};
 use rmp_crypto::{self as crypto, DeviceKey, Fingerprint, ObservedFingerprint};
 use rmp_proto::{
     key_auth_context, AuthFinish, AuthResponse, AuthResult, AuthStart, Data, Exec, ExitStatus,
-    Hello, HelloAck, KeyAuthChallenge, KeyAuthProof, KeyAuthRequest, Message, PtyRequest,
-    RemoteForwardBind, WindowChange,
+    FileOp, FileRequest, Hello, HelloAck, KeyAuthChallenge, KeyAuthProof, KeyAuthRequest, Message,
+    PtyRequest, RemoteForwardBind, WindowChange,
 };
 use std::net::SocketAddr;
+use std::path::Path;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -376,6 +377,94 @@ impl Client {
                 Ok(_) => {}
             }
         }
+    }
+
+    /// Download `remote` to the local path `local`. Returns bytes written.
+    pub async fn download(&self, remote: &str, local: impl AsRef<Path>) -> Result<u64> {
+        let (mut send, mut recv) = self.conn.open_bi().await.context("opening file stream")?;
+        rmp_proto::write_message(
+            &mut send,
+            &Message::FileRequest(FileRequest {
+                op: FileOp::Get,
+                path: remote.to_string(),
+            }),
+        )
+        .await?;
+
+        match rmp_proto::read_message(&mut recv).await? {
+            Message::FileResponse(r) if r.ok => {}
+            Message::FileResponse(r) => {
+                bail!("remote refused: {}", r.reason.unwrap_or_default())
+            }
+            other => bail!("unexpected response: {:?}", other.frame_type()),
+        }
+
+        let mut file = tokio::fs::File::create(local.as_ref())
+            .await
+            .with_context(|| format!("creating {}", local.as_ref().display()))?;
+        let mut total = 0u64;
+        loop {
+            match rmp_proto::read_message(&mut recv).await {
+                Ok(Message::Data(d)) => {
+                    tokio::io::AsyncWriteExt::write_all(&mut file, &d.data).await?;
+                    total += d.data.len() as u64;
+                }
+                Ok(Message::Eof) | Err(rmp_proto::StreamError::Closed) => break,
+                Ok(_) => {}
+                Err(e) => return Err(e).context("reading file data"),
+            }
+        }
+        tokio::io::AsyncWriteExt::flush(&mut file).await?;
+        Ok(total)
+    }
+
+    /// Upload `local` to the remote path `remote`. Returns bytes sent.
+    pub async fn upload(&self, local: impl AsRef<Path>, remote: &str) -> Result<u64> {
+        let (mut send, mut recv) = self.conn.open_bi().await.context("opening file stream")?;
+        rmp_proto::write_message(
+            &mut send,
+            &Message::FileRequest(FileRequest {
+                op: FileOp::Put,
+                path: remote.to_string(),
+            }),
+        )
+        .await?;
+
+        match rmp_proto::read_message(&mut recv).await? {
+            Message::FileResponse(r) if r.ok => {}
+            Message::FileResponse(r) => {
+                bail!("remote refused: {}", r.reason.unwrap_or_default())
+            }
+            other => bail!("unexpected response: {:?}", other.frame_type()),
+        }
+
+        let mut file = tokio::fs::File::open(local.as_ref())
+            .await
+            .with_context(|| format!("opening {}", local.as_ref().display()))?;
+        let mut buf = vec![0u8; 64 * 1024];
+        let mut total = 0u64;
+        loop {
+            let n = tokio::io::AsyncReadExt::read(&mut file, &mut buf).await?;
+            if n == 0 {
+                break;
+            }
+            rmp_proto::write_message(
+                &mut send,
+                &Message::Data(Data {
+                    data: buf[..n].to_vec(),
+                }),
+            )
+            .await?;
+            total += n as u64;
+        }
+        rmp_proto::write_message(&mut send, &Message::Eof).await?;
+
+        match rmp_proto::read_message(&mut recv).await? {
+            Message::ExitStatus(s) if s.exit_code == 0 => {}
+            Message::ExitStatus(s) => bail!("remote reported error (exit {})", s.exit_code),
+            other => bail!("unexpected response: {:?}", other.frame_type()),
+        }
+        Ok(total)
     }
 
     /// Open an interactive PTY session bridged to the local terminal.

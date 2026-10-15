@@ -209,6 +209,15 @@ mod tests {
             bound_port: 9000,
             reason: None,
         }));
+        roundtrip(Message::FileRequest(FileRequest {
+            op: FileOp::Get,
+            path: "/etc/hosts".into(),
+        }));
+        roundtrip(Message::FileResponse(FileResponse {
+            ok: true,
+            size: 1234,
+            reason: None,
+        }));
     }
 
     #[test]

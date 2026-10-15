@@ -42,6 +42,8 @@ pub struct Server {
     pub allow_local_forward: bool,
     /// Allow clients to request remote port forwards (`rmp connect -R`).
     pub allow_remote_forward: bool,
+    /// Allow file transfer (`rmp cp`).
+    pub allow_file_transfer: bool,
 }
 
 /// `[auth]` — authentication policy.
@@ -125,6 +127,7 @@ defaults!(Server,
     max_sessions: 8,
     allow_local_forward: true,
     allow_remote_forward: false,
+    allow_file_transfer: true,
 );
 
 defaults!(Auth,
@@ -203,6 +206,8 @@ max_sessions = 8
 allow_local_forward = true
 # Allow clients to request remote port forwards (rmp connect -R; binds on 127.0.0.1).
 allow_remote_forward = false
+# Allow file transfer (rmp cp).
+allow_file_transfer = true
 
 [auth]
 # Master switch for password authentication. false → nobody can log in.
