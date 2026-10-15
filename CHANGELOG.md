@@ -7,24 +7,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Planned
+
+- File transfer (SFTP-like channel).
+- Fuzzing of the wire format and 0-RTT resumption.
+
+## [0.1.1] - 2026-10-15
+
 ### Added
 
+- **Device-key enrollment and passwordless login.** After a successful password login a
+  client may enroll an Ed25519 device key (stored server-side in `authorized_keys`,
+  `0600`). Subsequent logins authenticate by signing a fresh server nonce
+  (`KeyAuthRequest` → `KeyAuthChallenge` → `KeyAuthProof`), bound to the account and key.
+  Controlled by `[auth] allow_key_auth` / `allow_key_enrollment` and
+  `[client] enable_key_auth` / `offer_enrollment`.
 - **Local port forwarding (`rmp connect -L [bind:]port:host:hostport`, `-N`).** Each
   accepted TCP connection is tunnelled over a dedicated QUIC stream; the server dials the
   target and pipes bytes (`ForwardRequest`/`ForwardResponse` + `Data`). Gated by
-  `[server] allow_local_forward`. The server now serves multiple concurrent streams per
-  connection (sessions and forwards).
-
+  `[server] allow_local_forward`.
 - **Remote port forwarding (`rmp connect -R [bind:]port:host:hostport`).** The client asks
   the server to listen on `127.0.0.1:port` (`RemoteForwardBind`); each accepted connection
   is offered back over a server-initiated QUIC stream (`ForwardRequest`) and the client
   dials the target. Gated by `[server] allow_remote_forward` (default `false`; loopback
   only).
 
-### Planned
+### Changed
 
-- File transfer (SFTP-like channel).
-- Fuzzing of the wire format and 0-RTT resumption.
+- The server now serves multiple concurrent streams per connection (sessions and forwards).
 
 ## [0.1.0] - 2026-10-12
 
@@ -51,5 +61,6 @@ Initial MVP: a functional, tested, SSH-like remote shell.
 - **Logging**: rotating `rmp.log` (everything) and `audit.log` (security events only).
 - Fully commented [configuration example](config.example.toml).
 
-[Unreleased]: https://github.com/marcosgabrielgomes110-collab/rmp/compare/v0.1.0...HEAD
+[Unreleased]: https://github.com/marcosgabrielgomes110-collab/rmp/compare/v0.1.1...HEAD
+[0.1.1]: https://github.com/marcosgabrielgomes110-collab/rmp/releases/tag/v0.1.1
 [0.1.0]: https://github.com/marcosgabrielgomes110-collab/rmp/releases/tag/v0.1.0
