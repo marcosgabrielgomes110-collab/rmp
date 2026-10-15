@@ -40,12 +40,13 @@ die() { echo "erro: $*" >&2; exit 1; }
 command -v curl >/dev/null 2>&1 || die "curl não encontrado"
 
 # --- current version ---------------------------------------------------------
+# The install target is always $INSTALL_DIR/rmp. For reading the *current*
+# version we may fall back to a `rmp` found on PATH (informational only).
 CUR=""
 if [ -x "$BIN" ]; then
   CUR="$("$BIN" --version 2>/dev/null | awk '{print $NF}')"
-elif command -v rmp >/dev/null 2>&1; then
-  BIN="$(command -v rmp)"
-  CUR="$("$BIN" --version 2>/dev/null | awk '{print $NF}')"
+elif found="$(command -v rmp 2>/dev/null)"; then
+  CUR="$("$found" --version 2>/dev/null | awk '{print $NF}')"
 fi
 CUR="${CUR:-none}"
 
