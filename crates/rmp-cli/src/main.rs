@@ -17,6 +17,7 @@ mod cmd_cp;
 mod cmd_init;
 mod cmd_passwd;
 mod cmd_serve;
+mod cmd_service;
 mod config;
 mod logging;
 
@@ -150,6 +151,23 @@ enum Command {
         #[arg(long)]
         root: bool,
     },
+    /// Install a systemd service so `rmp serve` runs at boot (Linux; needs root).
+    InstallService {
+        /// User the service runs as (default: the invoking user).
+        #[arg(long)]
+        user: Option<String>,
+        /// Path to the rmp binary (default: the running one).
+        #[arg(long)]
+        bin: Option<PathBuf>,
+        /// Install but do not start it.
+        #[arg(long)]
+        no_start: bool,
+        /// Print the unit file instead of installing it.
+        #[arg(long)]
+        dry_run: bool,
+    },
+    /// Remove the systemd service (Linux; needs root).
+    UninstallService,
 }
 
 fn main() -> Result<()> {
@@ -215,5 +233,12 @@ fn main() -> Result<()> {
             let layout = dirs.resolve()?;
             cmd_passwd::run(&layout, user, root)
         }
+        Command::InstallService {
+            user,
+            bin,
+            no_start,
+            dry_run,
+        } => cmd_service::install(user, bin, no_start, dry_run),
+        Command::UninstallService => cmd_service::uninstall(),
     }
 }

@@ -193,7 +193,7 @@ Para login como **root**: `rmp init --root` (ou `rmp passwd --root` + `allow_roo
 
 ```sh
 make            # binário release (LTO + strip) em target/release/rmp
-make test       # 64 testes (unit + integração end-to-end)
+make test       # 67 testes (unit + integração end-to-end)
 make clippy     # lint (warnings = erro)
 make install    # instala em $(PREFIX)/bin
 make dist       # empacota dist/rmp-<versão>-<os>-<arch>.tar.gz
@@ -223,6 +223,20 @@ cargo test
 cargo clippy --all-targets -- -D warnings
 cargo fmt --all
 ```
+
+## Serviço (systemd)
+
+Para rodar `rmp serve` como serviço do sistema (sobe no boot), no Linux:
+
+```sh
+sudo rmp install-service            # cria/enable/inicia rmp.service
+sudo rmp install-service --dry-run  # só mostra a unit
+sudo rmp uninstall-service          # remove
+systemctl status rmp                # estado
+journalctl -u rmp -f                # logs
+```
+A unit roda como o usuário que chamou (`SUDO_USER`), usa o binário em execução por padrão e
+`Restart=on-failure`. macOS (launchd) e Windows (SCM) ainda não são suportados.
 
 ## Licença
 
