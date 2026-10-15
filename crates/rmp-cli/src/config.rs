@@ -40,6 +40,8 @@ pub struct Server {
     pub max_sessions: usize,
     /// Allow clients to open local port forwards (`rmp connect -L`).
     pub allow_local_forward: bool,
+    /// Allow clients to request remote port forwards (`rmp connect -R`).
+    pub allow_remote_forward: bool,
 }
 
 /// `[auth]` — authentication policy.
@@ -122,6 +124,7 @@ defaults!(Server,
     motd: String::new(),
     max_sessions: 8,
     allow_local_forward: true,
+    allow_remote_forward: false,
 );
 
 defaults!(Auth,
@@ -198,6 +201,8 @@ motd = ""
 max_sessions = 8
 # Allow clients to open local port forwards (rmp connect -L).
 allow_local_forward = true
+# Allow clients to request remote port forwards (rmp connect -R; binds on 127.0.0.1).
+allow_remote_forward = false
 
 [auth]
 # Master switch for password authentication. false → nobody can log in.

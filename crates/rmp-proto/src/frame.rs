@@ -209,6 +209,8 @@ mod tests {
         }));
         roundtrip(Message::RemoteForwardBind(RemoteForwardBind {
             bind_port: 9000,
+            target_host: "localhost".into(),
+            target_port: 5432,
         }));
         roundtrip(Message::RemoteForwardBindResult(RemoteForwardBindResult {
             ok: true,

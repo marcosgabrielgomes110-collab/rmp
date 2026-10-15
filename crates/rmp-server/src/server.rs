@@ -56,6 +56,8 @@ pub struct ServerOptions {
     pub log_commands: bool,
     /// Allow clients to open local port forwards (`rmp connect -L`).
     pub allow_local_forward: bool,
+    /// Allow clients to request remote port forwards (`rmp connect -R`).
+    pub allow_remote_forward: bool,
     /// Maximum number of concurrent sessions.
     pub max_sessions: usize,
     /// Live session counter.
@@ -103,6 +105,7 @@ impl ServerOptions {
             denied_cidrs: Vec::new(),
             log_commands: true,
             allow_local_forward: true,
+            allow_remote_forward: false,
             max_sessions: 8,
             sessions: AtomicUsize::new(0),
         }
@@ -313,6 +316,15 @@ async fn handle_connection(
     };
 
     // Serve streams (sessions and forwards) until the connection closes.
+    // Control requests (e.g. remote-forward binds) are handled concurrently.
+    let ctrl_opts = opts.clone();
+    let ctrl_conn = conn.clone();
+    tokio::spawn(async move {
+        if let Err(e) = control_loop(send, recv, ctrl_opts, ctrl_conn, peer).await {
+            tracing::debug!(%peer, error = %e, "control loop ended");
+        }
+    });
+
     let mut tasks = tokio::task::JoinSet::new();
     while let Ok((send, recv)) = conn.accept_bi().await {
         let opts = opts.clone();
@@ -409,4 +421,127 @@ fn acquire_session(opts: &ServerOptions) -> Option<SessionGuard<'_>> {
     } else {
         Some(SessionGuard(&opts.sessions))
     }
+}
+
+/// Handle post-authentication control-stream requests.
+async fn control_loop(
+    mut send: quinn::SendStream,
+    mut recv: quinn::RecvStream,
+    opts: Arc<ServerOptions>,
+    conn: quinn::Connection,
+    peer: SocketAddr,
+) -> Result<()> {
+    while let Ok(msg) = rmp_proto::read_message(&mut recv).await {
+        match msg {
+            Message::RemoteForwardBind(req) => {
+                handle_remote_bind(&mut send, &opts, &conn, peer, req).await?;
+            }
+            Message::Disconnect(_) => break,
+            _ => {}
+        }
+    }
+    Ok(())
+}
+
+/// Bind a server-side listener for a `-R` request and forward connections back
+/// to the client.
+async fn handle_remote_bind(
+    send: &mut quinn::SendStream,
+    opts: &ServerOptions,
+    conn: &quinn::Connection,
+    peer: SocketAddr,
+    req: rmp_proto::RemoteForwardBind,
+) -> Result<()> {
+    use tokio::net::TcpListener;
+
+    if !opts.allow_remote_forward {
+        audit!(event = "remote_forward.refused", peer = %peer, reason = "disabled");
+        rmp_proto::write_message(
+            send,
+            &Message::RemoteForwardBindResult(rmp_proto::RemoteForwardBindResult {
+                ok: false,
+                bound_port: 0,
+                reason: Some("remote forwarding is disabled".into()),
+            }),
+        )
+        .await?;
+        return Ok(());
+    }
+
+    // Bind on loopback only, so a client cannot expose the machine on the LAN.
+    let addr = SocketAddr::from(([127, 0, 0, 1], req.bind_port));
+    match TcpListener::bind(addr).await {
+        Ok(listener) => {
+            let bound = listener
+                .local_addr()
+                .map(|a| a.port())
+                .unwrap_or(req.bind_port);
+            rmp_proto::write_message(
+                send,
+                &Message::RemoteForwardBindResult(rmp_proto::RemoteForwardBindResult {
+                    ok: true,
+                    bound_port: bound,
+                    reason: None,
+                }),
+            )
+            .await?;
+            audit!(event = "remote_forward.open", peer = %peer, bound_port = bound,
+                   target = %format!("{}:{}", req.target_host, req.target_port));
+
+            let conn = conn.clone();
+            let host = req.target_host.clone();
+            let port = req.target_port;
+            tokio::spawn(async move {
+                while let Ok((tcp, _)) = listener.accept().await {
+                    let conn = conn.clone();
+                    let host = host.clone();
+                    tokio::spawn(async move {
+                        if let Err(e) = serve_remote_conn(conn, tcp, host, port).await {
+                            tracing::debug!("remote forward connection ended: {e}");
+                        }
+                    });
+                }
+            });
+            Ok(())
+        }
+        Err(e) => {
+            audit!(event = "remote_forward.refused", peer = %peer, reason = %e);
+            rmp_proto::write_message(
+                send,
+                &Message::RemoteForwardBindResult(rmp_proto::RemoteForwardBindResult {
+                    ok: false,
+                    bound_port: 0,
+                    reason: Some(e.to_string()),
+                }),
+            )
+            .await?;
+            Ok(())
+        }
+    }
+}
+
+/// Offer a server-side TCP connection to the client, which dials the target.
+async fn serve_remote_conn(
+    conn: quinn::Connection,
+    tcp: tokio::net::TcpStream,
+    host: String,
+    port: u16,
+) -> Result<()> {
+    let (mut send, mut recv) = conn
+        .open_bi()
+        .await
+        .context("opening remote forward stream")?;
+    rmp_proto::write_message(
+        &mut send,
+        &Message::ForwardRequest(rmp_proto::ForwardRequest { host, port }),
+    )
+    .await?;
+    match rmp_proto::read_message(&mut recv).await? {
+        Message::ForwardResponse(rmp_proto::ForwardResponse { ok: true, .. }) => {}
+        Message::ForwardResponse(rmp_proto::ForwardResponse { ok: false, reason }) => {
+            anyhow::bail!("client refused forward: {}", reason.unwrap_or_default());
+        }
+        other => anyhow::bail!("unexpected forward response: {:?}", other.frame_type()),
+    }
+    crate::forward::pipe(tcp, send, recv).await
 }

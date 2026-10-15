@@ -80,7 +80,7 @@ sequenceDiagram
 | Anti-MITM | Pinning de **fingerprint** (Ed25519, TOFU/`known_hosts`) |
 | Senha nunca exposta | **OPAQUE (RFC 9807)**; servidor guarda registro resistente a ataque offline |
 | Login sem senha | **Chave de dispositivo Ed25519**; o servidor assina/verifica um nonce (sem replay) |
-| Port forwarding | Túneis `-L` sobre streams QUIC (gate `[server] allow_local_forward`) |
+| Port forwarding | Túneis `-L` e `-R` sobre streams QUIC (gates `[server] allow_local_forward` / `allow_remote_forward`) |
 | Anti-brute-force | Rate limit + lockout por IP |
 | Controle de acesso | Allow/deny por **CIDR** |
 | Segredos em disco | Diretórios `0700`, arquivos `0600`, `zeroize` em memória |
@@ -118,13 +118,18 @@ rmp connect alice@host --accept-new
 ### Port forwarding
 
 ```sh
-# Encaminha a porta local 8080 para 10.0.0.5:80 visto a partir do servidor:
+# Local (-L): a porta local 8080 acessa 10.0.0.5:80 como visto pelo servidor.
 rmp connect alice@host -L 8080:10.0.0.5:80
 
-# Só o túnel, sem shell (estilo `ssh -N`):
-rmp connect alice@host -N -L 8080:10.0.0.5:80
+# Remoto (-R): o servidor escuta em 127.0.0.1:9090 e encaminha para 127.0.0.1:5432
+# visto a partir do *cliente* (útil para expor um serviço local ao servidor).
+rmp connect alice@host -R 9090:127.0.0.1:5432
+
+# Só os túneis, sem shell (estilo `ssh -N`):
+rmp connect alice@host -N -L 8080:10.0.0.5:80 -R 9090:127.0.0.1:5432
 ```
-O servidor controla com `[server] allow_local_forward` (padrão `true`).
+Controle no servidor: `[server] allow_local_forward` (padrão `true`) e
+`[server] allow_remote_forward` (padrão `false`; `-R` sempre liga em `127.0.0.1`).
 
 ### Login sem senha (chave de dispositivo)
 

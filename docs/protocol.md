@@ -144,11 +144,17 @@ os bytes passam a fluir em ambos os sentidos como mensagens `Data` (fim de dire�
 |---|---|---|---|
 | `0x50` | `ForwardRequest` | quem pede → quem disca | `host: string`, `port: u16` |
 | `0x51` | `ForwardResponse` | quem disca → quem pede | `ok: bool`, `reason?: string` |
+| `0x34` | `RemoteForwardBind` | C→S (control) | `bind_port: u16`, `target_host: string`, `target_port: u16` |
+| `0x35` | `RemoteForwardBindResult` | S→C (control) | `ok: bool`, `bound_port: u16`, `reason?: string` |
 
-Fluxo `rmp connect -L port:host:port` (`-L`): o **cliente** cria o `TcpListener` local;
-a cada conexão ele abre uma stream, envia `ForwardRequest{host,port}`; o **servidor**
-disca `host:port`, responde `ForwardResponse{ok}` e faz o pipe.
-(`0x34`/`0x35` — `RemoteForwardBind`/`Result` — ficam reservados para `-R`.)
+Fluxo `rmp connect -L port:host:port`: o **cliente** cria o `TcpListener` local; a cada
+conexão ele abre uma stream, envia `ForwardRequest{host,port}`; o **servidor** disca
+`host:port`, responde `ForwardResponse{ok}` e faz o pipe.
+
+Fluxo `rmp connect -R port:host:port`: o cliente envia `RemoteForwardBind` no canal de
+controle; o servidor faz bind em `127.0.0.1:port` e responde `RemoteForwardBindResult`.
+A cada conexão no bind, o **servidor** abre uma stream e envia
+`ForwardRequest{host,port}`; o **cliente** disca o alvo (lado do cliente) e faz o pipe.
 
 ## 6. Fluxo de controle (flow control)
 

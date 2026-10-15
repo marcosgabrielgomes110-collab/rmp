@@ -390,10 +390,12 @@ pub struct ForwardResponse {
 }
 
 /// Client asks the server to listen on `bind_port` (127.0.0.1) and forward
-/// incoming connections back to the client.
+/// incoming connections back to the client, which then dials `target_host:target_port`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RemoteForwardBind {
     pub bind_port: u16,
+    pub target_host: String,
+    pub target_port: u16,
 }
 
 /// Server's answer to [`RemoteForwardBind`].

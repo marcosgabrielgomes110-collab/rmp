@@ -15,9 +15,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `[server] allow_local_forward`. The server now serves multiple concurrent streams per
   connection (sessions and forwards).
 
+- **Remote port forwarding (`rmp connect -R [bind:]port:host:hostport`).** The client asks
+  the server to listen on `127.0.0.1:port` (`RemoteForwardBind`); each accepted connection
+  is offered back over a server-initiated QUIC stream (`ForwardRequest`) and the client
+  dials the target. Gated by `[server] allow_remote_forward` (default `false`; loopback
+  only).
+
 ### Planned
 
-- Remote port forwarding (`-R`; `RemoteForwardBind` is already sketched in the protocol).
 - File transfer (SFTP-like channel).
 - Fuzzing of the wire format and 0-RTT resumption.
 

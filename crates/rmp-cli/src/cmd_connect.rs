@@ -70,6 +70,7 @@ pub async fn run(
     accept_new_flag: bool,
     idle_override: Option<u64>,
     forwards: Vec<String>,
+    remote_forwards: Vec<String>,
     no_shell: bool,
 ) -> Result<i32> {
     let _ = layout.ensure_config();
@@ -131,7 +132,7 @@ pub async fn run(
             Ok(client) => {
                 tracing::info!(target: AUDIT_TARGET, event = "auth.success", host = %key,
                                user = %target.user, method = "key");
-                return finish(client, &key, &forwards, no_shell).await;
+                return finish(client, &key, &forwards, &remote_forwards, no_shell).await;
             }
             Err(e) => {
                 tracing::warn!(target: AUDIT_TARGET, event = "auth.key_rejected", host = %key, error = %e);
@@ -180,11 +181,17 @@ pub async fn run(
 
     tracing::info!(target: AUDIT_TARGET, event = "auth.success", host = %key,
                    user = %target.user, method = "password");
-    finish(client, &key, &forwards, no_shell).await
+    finish(client, &key, &forwards, &remote_forwards, no_shell).await
 }
 
-/// Start local forwards and either run a shell or just keep forwarding.
-async fn finish(client: Client, key: &str, forwards: &[String], no_shell: bool) -> Result<i32> {
+/// Start forwards and either run a shell or just keep forwarding.
+async fn finish(
+    mut client: Client,
+    key: &str,
+    forwards: &[String],
+    remote_forwards: &[String],
+    no_shell: bool,
+) -> Result<i32> {
     if !forwards.is_empty() {
         let conn = client.connection().clone();
         for spec in forwards {
@@ -202,6 +209,22 @@ async fn finish(client: Client, key: &str, forwards: &[String], no_shell: bool) 
                     eprintln!("[rmp] forward {actual} failed: {e}");
                 }
             });
+        }
+    }
+
+    if !remote_forwards.is_empty() {
+        let conn = client.connection().clone();
+        tokio::spawn(async move {
+            let _ = rmp_client::remote_forward_accept(conn).await;
+        });
+        for spec in remote_forwards {
+            let (bind_port, host, port) = parse_remote_forward(spec)?;
+            let bound = client
+                .request_remote_forward(bind_port, &host, port)
+                .await?;
+            eprintln!("[rmp] remote forward 127.0.0.1:{bound} (server) -> {host}:{port}");
+            tracing::info!(target: AUDIT_TARGET, event = "remote_forward.start", bind = bound,
+                           target = %format!("{host}:{port}"));
         }
     }
 
@@ -239,6 +262,28 @@ fn parse_forward(spec: &str) -> Result<(SocketAddr, String, u16)> {
         .parse()
         .context("invalid forward bind address")?;
     Ok((bind, host, host_port))
+}
+
+/// Parse `[bind_address:]port:host:hostport` for a remote (`-R`) forward.
+fn parse_remote_forward(spec: &str) -> Result<(u16, String, u16)> {
+    let parts: Vec<&str> = spec.split(':').collect();
+    let (bind_port, host, host_port) = match parts.as_slice() {
+        [p, h, hp] => (
+            p.parse::<u16>().context("invalid bind port")?,
+            h.to_string(),
+            hp.parse::<u16>().context("invalid target port")?,
+        ),
+        [_b, p, h, hp] => (
+            p.parse::<u16>().context("invalid bind port")?,
+            h.to_string(),
+            hp.parse::<u16>().context("invalid target port")?,
+        ),
+        _ => bail!("remote forward spec must be [bind_address:]port:host:hostport"),
+    };
+    if host.is_empty() {
+        bail!("remote forward spec is missing the target host");
+    }
+    Ok((bind_port, host, host_port))
 }
 
 /// Establish the transport and verify the server fingerprint (TOFU/pinning).

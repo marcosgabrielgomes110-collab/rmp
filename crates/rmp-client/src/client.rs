@@ -7,7 +7,7 @@ use rmp_crypto::{self as crypto, DeviceKey, Fingerprint, ObservedFingerprint};
 use rmp_proto::{
     key_auth_context, AuthFinish, AuthResponse, AuthResult, AuthStart, Data, Exec, ExitStatus,
     Hello, HelloAck, KeyAuthChallenge, KeyAuthProof, KeyAuthRequest, Message, PtyRequest,
-    WindowChange,
+    RemoteForwardBind, WindowChange,
 };
 use std::net::SocketAddr;
 use std::sync::Arc;
@@ -200,8 +200,8 @@ impl Transport {
 pub struct Client {
     _endpoint: Endpoint,
     conn: Connection,
-    _ctrl_send: SendStream,
-    _ctrl_recv: RecvStream,
+    ctrl_send: SendStream,
+    ctrl_recv: RecvStream,
     observed: Option<Fingerprint>,
     key_enrolled: bool,
 }
@@ -252,8 +252,8 @@ impl Client {
         Ok(Client {
             _endpoint: endpoint,
             conn,
-            _ctrl_send: send,
-            _ctrl_recv: recv,
+            ctrl_send: send,
+            ctrl_recv: recv,
             observed: observed.get(),
             key_enrolled,
         })
@@ -279,6 +279,32 @@ impl Client {
     /// Whether a device key was enrolled during this connection.
     pub fn key_enrolled(&self) -> bool {
         self.key_enrolled
+    }
+
+    /// Ask the server to listen on `bind_port` and forward connections back to
+    /// this client, which will dial `host:port`. Returns the bound port.
+    pub async fn request_remote_forward(
+        &mut self,
+        bind_port: u16,
+        host: &str,
+        port: u16,
+    ) -> Result<u16> {
+        rmp_proto::write_message(
+            &mut self.ctrl_send,
+            &Message::RemoteForwardBind(RemoteForwardBind {
+                bind_port,
+                target_host: host.to_string(),
+                target_port: port,
+            }),
+        )
+        .await?;
+        match rmp_proto::read_message(&mut self.ctrl_recv).await? {
+            Message::RemoteForwardBindResult(r) if r.ok => Ok(r.bound_port),
+            Message::RemoteForwardBindResult(r) => {
+                bail!("remote forward refused: {}", r.reason.unwrap_or_default())
+            }
+            other => bail!("unexpected response: {:?}", other.frame_type()),
+        }
     }
 
     /// Run a command and collect all output.

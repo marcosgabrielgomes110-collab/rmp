@@ -193,9 +193,17 @@ idle_timeout_secs = 600
 
 Uma stream de encaminhamento começa com `ForwardRequest`; o lado que recebe a mensagem
 disca a conexão TCP de destino, responde `ForwardResponse{ok}` e então transporta os bytes
-em ambos os sentidos via mensagens `Data` (terminadas por `Eof`). Em `rmp connect -L
-port:host:port`, o cliente cria o listener TCP local e o servidor abre a conexão de
-destino. O servidor pode desligar isso com `[server] allow_local_forward`.
+em ambos os sentidos via mensagens `Data` (terminadas por `Eof`).
+
+- **`-L` (local):** o cliente cria o `TcpListener` local; a cada conexão ele abre uma
+  stream e envia `ForwardRequest{host,port}`; o servidor disca. Gate
+  `[server] allow_local_forward`.
+- **`-R` (remoto):** o cliente envia `RemoteForwardBind{bind_port,target_host,target_port}`
+  pelo canal de controle; o servidor faz bind em `127.0.0.1:bind_port` e responde
+  `RemoteForwardBindResult{bound_port}`. A cada conexão recebida, o **servidor** abre uma
+  stream para o cliente e envia `ForwardRequest{target_host,target_port}`; o **cliente**
+  disca e faz o pipe. Gate `[server] allow_remote_forward` (padrão `false`; bind só em
+  loopback).
 
 ### Modo root
 

@@ -112,6 +112,9 @@ enum Command {
         /// Local forward: `[bind_address:]port:host:hostport` (repeatable).
         #[arg(short = 'L', long = "local-forward", value_name = "SPEC")]
         local_forward: Vec<String>,
+        /// Remote forward: `[bind_address:]port:host:hostport` bound on the server (repeatable).
+        #[arg(short = 'R', long = "remote-forward", value_name = "SPEC")]
+        remote_forward: Vec<String>,
         /// Do not open a shell; only keep forwards running.
         #[arg(short = 'N', long = "no-shell")]
         no_shell: bool,
@@ -158,6 +161,7 @@ fn main() -> Result<()> {
             dirs,
             accept_new,
             local_forward,
+            remote_forward,
             no_shell,
             idle_timeout,
         } => {
@@ -171,6 +175,7 @@ fn main() -> Result<()> {
                 accept_new,
                 idle_timeout,
                 local_forward,
+                remote_forward,
                 no_shell,
             ))?;
             std::process::exit(code);

@@ -60,6 +60,43 @@ async fn handle(conn: Connection, tcp: TcpStream, host: String, port: u16) -> Re
     pipe(tcp, send, recv).await
 }
 
+/// Accept server-initiated forwarding streams (for `rmp connect -R`) and dial
+/// the requested target, then pipe.
+pub async fn remote_forward_accept(conn: Connection) -> Result<()> {
+    while let Ok((mut send, mut recv)) = conn.accept_bi().await {
+        tokio::spawn(async move {
+            if let Ok(Message::ForwardRequest(ForwardRequest { host, port })) =
+                rmp_proto::read_message(&mut recv).await
+            {
+                match TcpStream::connect((host.as_str(), port)).await {
+                    Ok(tcp) => {
+                        let _ = rmp_proto::write_message(
+                            &mut send,
+                            &Message::ForwardResponse(ForwardResponse {
+                                ok: true,
+                                reason: None,
+                            }),
+                        )
+                        .await;
+                        let _ = pipe(tcp, send, recv).await;
+                    }
+                    Err(e) => {
+                        let _ = rmp_proto::write_message(
+                            &mut send,
+                            &Message::ForwardResponse(ForwardResponse {
+                                ok: false,
+                                reason: Some(e.to_string()),
+                            }),
+                        )
+                        .await;
+                    }
+                }
+            }
+        });
+    }
+    Ok(())
+}
+
 /// Pipe a TCP connection and a framed QUIC stream in both directions.
 pub(crate) async fn pipe(tcp: TcpStream, mut send: SendStream, mut recv: RecvStream) -> Result<()> {
     let (mut tcp_read, mut tcp_write) = tcp.into_split();

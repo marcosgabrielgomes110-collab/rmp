@@ -17,10 +17,14 @@ struct Harness {
 }
 
 async fn start_server() -> Harness {
-    start_server_with(true, true).await
+    start_server_with(true, true, false).await
 }
 
-async fn start_server_with(allow_key_auth: bool, allow_key_enrollment: bool) -> Harness {
+async fn start_server_with(
+    allow_key_auth: bool,
+    allow_key_enrollment: bool,
+    allow_remote_forward: bool,
+) -> Harness {
     let host_key = crypto::HostKey::generate().unwrap();
     let fingerprint = host_key.fingerprint();
     let setup = crypto::password::new_setup();
@@ -40,6 +44,7 @@ async fn start_server_with(allow_key_auth: bool, allow_key_enrollment: bool) -> 
     opts.keep_alive = Duration::from_secs(5);
     opts.allow_key_auth = allow_key_auth;
     opts.allow_key_enrollment = allow_key_enrollment;
+    opts.allow_remote_forward = allow_remote_forward;
     opts.authorized_keys_path = authorized_keys.clone();
 
     let endpoint = bind("127.0.0.1:0".parse().unwrap(), &opts).unwrap();
@@ -231,7 +236,7 @@ async fn unknown_device_key_is_rejected() {
 
 #[tokio::test]
 async fn enrollment_disabled_does_not_store_key() {
-    let h = start_server_with(true, false).await;
+    let h = start_server_with(true, false, false).await;
     let opts = client_opts(&h, Some(h.fingerprint));
 
     let device = rmp_client::DeviceKey::generate();
@@ -254,7 +259,7 @@ async fn enrollment_disabled_does_not_store_key() {
 
 #[tokio::test]
 async fn key_auth_disabled_rejects_key() {
-    let h = start_server_with(false, true).await;
+    let h = start_server_with(false, true, false).await;
     let opts = client_opts(&h, Some(h.fingerprint));
     let device = rmp_client::DeviceKey::generate();
 
@@ -322,4 +327,78 @@ async fn local_port_forward_roundtrip() {
         .expect("no timeout")
         .expect("read echo");
     assert_eq!(&buf[..n], b"ping-through-rmp");
+}
+
+#[tokio::test]
+async fn remote_port_forward_roundtrip() {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    use tokio::net::{TcpListener, TcpStream};
+
+    // Server that allows -R.
+    let h = start_server_with(true, true, true).await;
+    let opts = client_opts(&h, Some(h.fingerprint));
+    let mut client = Client::connect(&opts, USER, PASSWORD.as_bytes())
+        .await
+        .unwrap();
+
+    // A client-side echo target.
+    let echo = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let echo_port = echo.local_addr().unwrap().port();
+    tokio::spawn(async move {
+        while let Ok((mut sock, _)) = echo.accept().await {
+            tokio::spawn(async move {
+                let mut buf = [0u8; 1024];
+                loop {
+                    match sock.read(&mut buf).await {
+                        Ok(0) | Err(_) => break,
+                        Ok(n) => {
+                            if sock.write_all(&buf[..n]).await.is_err() {
+                                break;
+                            }
+                        }
+                    }
+                }
+            });
+        }
+    });
+
+    // Accept server-initiated forwarding streams.
+    let conn = client.connection().clone();
+    tokio::spawn(rmp_client::remote_forward_accept(conn));
+
+    // Ask the server to listen (ephemeral port) and forward to our echo.
+    let bound = client
+        .request_remote_forward(0, "127.0.0.1", echo_port)
+        .await
+        .expect("remote forward bound");
+
+    // Connect to the server's bound port; the bytes must reach our echo server.
+    let mut tun = tokio::time::timeout(
+        Duration::from_secs(5),
+        TcpStream::connect(("127.0.0.1", bound)),
+    )
+    .await
+    .expect("no timeout")
+    .expect("connect to server bound port");
+
+    tun.write_all(b"remote-ping").await.unwrap();
+    let mut buf = vec![0u8; 64];
+    let n = tokio::time::timeout(Duration::from_secs(5), tun.read(&mut buf))
+        .await
+        .expect("no timeout")
+        .expect("read echo");
+    assert_eq!(&buf[..n], b"remote-ping");
+}
+
+#[tokio::test]
+async fn remote_forward_disabled_is_refused() {
+    // Default server has allow_remote_forward = false.
+    let h = start_server().await;
+    let opts = client_opts(&h, Some(h.fingerprint));
+    let mut client = Client::connect(&opts, USER, PASSWORD.as_bytes())
+        .await
+        .unwrap();
+
+    let result = client.request_remote_forward(0, "127.0.0.1", 9).await;
+    assert!(result.is_err(), "remote forwarding must be refused");
 }
