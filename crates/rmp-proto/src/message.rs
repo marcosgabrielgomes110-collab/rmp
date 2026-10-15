@@ -514,4 +514,90 @@ impl Message {
             Err(ProtoError::UnexpectedType(self.frame_type()))
         }
     }
+
+    /// Serialize only the message **body** (no enum tag).
+    ///
+    /// The message type travels in the frame header ([`FrameType`]), so the
+    /// encoding is *insertion-safe*: adding new variants never shifts the
+    /// encoding of existing ones (unlike serializing the enum directly, whose
+    /// variants are numbered positionally).
+    pub(crate) fn encode_body(&self) -> Result<Vec<u8>, ProtoError> {
+        use Message::*;
+        let body = match self {
+            Hello(m) => postcard::to_allocvec(m)?,
+            HelloAck(m) => postcard::to_allocvec(m)?,
+            Capabilities(m) => postcard::to_allocvec(m)?,
+            AuthStart(m) => postcard::to_allocvec(m)?,
+            AuthResponse(m) => postcard::to_allocvec(m)?,
+            AuthFinish(m) => postcard::to_allocvec(m)?,
+            AuthResult(m) => postcard::to_allocvec(m)?,
+            KeyAuthRequest(m) => postcard::to_allocvec(m)?,
+            KeyAuthChallenge(m) => postcard::to_allocvec(m)?,
+            KeyAuthProof(m) => postcard::to_allocvec(m)?,
+            ChannelOpen(m) => postcard::to_allocvec(m)?,
+            ChannelOpenAck(m) => postcard::to_allocvec(m)?,
+            ChannelClose(m) => postcard::to_allocvec(m)?,
+            WindowAdjust(m) => postcard::to_allocvec(m)?,
+            Ping(m) => postcard::to_allocvec(m)?,
+            Pong(m) => postcard::to_allocvec(m)?,
+            Disconnect(m) => postcard::to_allocvec(m)?,
+            GoAway(m) => postcard::to_allocvec(m)?,
+            RemoteForwardBind(m) => postcard::to_allocvec(m)?,
+            RemoteForwardBindResult(m) => postcard::to_allocvec(m)?,
+            PtyRequest(m) => postcard::to_allocvec(m)?,
+            Shell => Vec::new(),
+            Exec(m) => postcard::to_allocvec(m)?,
+            Env(m) => postcard::to_allocvec(m)?,
+            WindowChange(m) => postcard::to_allocvec(m)?,
+            Signal(m) => postcard::to_allocvec(m)?,
+            Data(m) => postcard::to_allocvec(m)?,
+            Eof => Vec::new(),
+            ExitStatus(m) => postcard::to_allocvec(m)?,
+            ExitSignal(m) => postcard::to_allocvec(m)?,
+            ForwardRequest(m) => postcard::to_allocvec(m)?,
+            ForwardResponse(m) => postcard::to_allocvec(m)?,
+        };
+        Ok(body)
+    }
+
+    /// Deserialize a message body using the type from the frame header.
+    pub(crate) fn decode_body(frame_type: FrameType, bytes: &[u8]) -> Result<Message, ProtoError> {
+        use FrameType::*;
+        Ok(match frame_type {
+            Hello => Message::Hello(postcard::from_bytes(bytes)?),
+            HelloAck => Message::HelloAck(postcard::from_bytes(bytes)?),
+            Capabilities => Message::Capabilities(postcard::from_bytes(bytes)?),
+            AuthStart => Message::AuthStart(postcard::from_bytes(bytes)?),
+            AuthResponse => Message::AuthResponse(postcard::from_bytes(bytes)?),
+            AuthFinish => Message::AuthFinish(postcard::from_bytes(bytes)?),
+            AuthResult => Message::AuthResult(postcard::from_bytes(bytes)?),
+            KeyAuthRequest => Message::KeyAuthRequest(postcard::from_bytes(bytes)?),
+            KeyAuthChallenge => Message::KeyAuthChallenge(postcard::from_bytes(bytes)?),
+            KeyAuthProof => Message::KeyAuthProof(postcard::from_bytes(bytes)?),
+            ChannelOpen => Message::ChannelOpen(postcard::from_bytes(bytes)?),
+            ChannelOpenAck => Message::ChannelOpenAck(postcard::from_bytes(bytes)?),
+            ChannelClose => Message::ChannelClose(postcard::from_bytes(bytes)?),
+            WindowAdjust => Message::WindowAdjust(postcard::from_bytes(bytes)?),
+            Ping => Message::Ping(postcard::from_bytes(bytes)?),
+            Pong => Message::Pong(postcard::from_bytes(bytes)?),
+            Disconnect => Message::Disconnect(postcard::from_bytes(bytes)?),
+            GoAway => Message::GoAway(postcard::from_bytes(bytes)?),
+            RemoteForwardBind => Message::RemoteForwardBind(postcard::from_bytes(bytes)?),
+            RemoteForwardBindResult => {
+                Message::RemoteForwardBindResult(postcard::from_bytes(bytes)?)
+            }
+            PtyRequest => Message::PtyRequest(postcard::from_bytes(bytes)?),
+            Shell => Message::Shell,
+            Exec => Message::Exec(postcard::from_bytes(bytes)?),
+            Env => Message::Env(postcard::from_bytes(bytes)?),
+            WindowChange => Message::WindowChange(postcard::from_bytes(bytes)?),
+            Signal => Message::Signal(postcard::from_bytes(bytes)?),
+            Data => Message::Data(postcard::from_bytes(bytes)?),
+            Eof => Message::Eof,
+            ExitStatus => Message::ExitStatus(postcard::from_bytes(bytes)?),
+            ExitSignal => Message::ExitSignal(postcard::from_bytes(bytes)?),
+            ForwardRequest => Message::ForwardRequest(postcard::from_bytes(bytes)?),
+            ForwardResponse => Message::ForwardResponse(postcard::from_bytes(bytes)?),
+        })
+    }
 }

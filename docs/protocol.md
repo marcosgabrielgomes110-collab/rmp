@@ -37,14 +37,22 @@ Todo frame:
 ```
 
 - `MAGIC` (u16, BE): `0x524D`.
-- `VERSION` (u8): versão do wire format; atualmente `1`.
-- `FRAME_TYPE` (u8): código da mensagem (tabelas abaixo).
+- `VERSION` (u8): versão do wire format; atualmente **`2`** (v1 usava índice de enum
+  posicional; v2 usa tag explícita — incompatíveis).
+- `FRAME_TYPE` (u8): código da mensagem (tabelas abaixo). **É o tag que identifica a
+  mensagem** — o `PAYLOAD` contém **apenas o corpo** da mensagem, sem tag de enum.
 - `LENGTH` (u32, BE): tamanho do payload.
 - **Limite:** frames acima de um `max_frame` configurável (padrão 1 MiB) derrubam a
   conexão com `FRAME_TOO_LARGE`.
 
-Os enums de mensagem (`FrameType`) são fixados numericamente: valores desconhecidos em um
-tipo **obrigatório** causam erro; em um tipo **extensível**, são ignorados.
+> **Por que v2?** A v1 serializava o enum `Message` inteiro; o `postcard` numera as
+> variantes **por posição**, então **inserir** uma mensagem nova deslocava a codificação
+> das demais e quebrava a comunicação entre versões. Na v2 o `FRAME_TYPE` é o tag explícito
+> e o corpo é serializado isoladamente — **adicionar mensagens não quebra as antigas**.
+
+Os códigos de mensagem (`FrameType`) são fixados numericamente: valores desconhecidos em um
+tipo **obrigatório** causam erro; em um tipo **extensível**, são ignorados. A negociação de
+versão (`Hello`/`HelloAck`) recusa versões incompatíveis com erro claro.
 
 ## 4. Control channel
 

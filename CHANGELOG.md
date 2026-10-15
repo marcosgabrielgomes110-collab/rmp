@@ -12,6 +12,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - File transfer (SFTP-like channel).
 - Fuzzing of the wire format and 0-RTT resumption.
 
+## [0.2.0] - 2026-10-15
+
+### Changed
+
+- **Wire format v2 (breaking).** Messages are now framed with an explicit `FrameType` tag
+  and the body is serialized on its own, instead of serializing the `Message` enum whose
+  variants are numbered positionally. Adding new message types no longer shifts the
+  encoding of existing ones, so incompatible versions fail fast (version negotiation)
+  rather than failing mid-session. `WIRE_VERSION` and `PROTO_VERSION` are bumped to 2.
+
+### Fixed
+
+- `rmp connect` now establishes the connection and verifies the server host key (TOFU)
+  *before* offering device-key enrollment and asking for the password.
+
 ## [0.1.1] - 2026-10-15
 
 ### Added
@@ -61,6 +76,7 @@ Initial MVP: a functional, tested, SSH-like remote shell.
 - **Logging**: rotating `rmp.log` (everything) and `audit.log` (security events only).
 - Fully commented [configuration example](config.example.toml).
 
-[Unreleased]: https://github.com/marcosgabrielgomes110-collab/rmp/compare/v0.1.1...HEAD
+[Unreleased]: https://github.com/marcosgabrielgomes110-collab/rmp/compare/v0.2.0...HEAD
+[0.2.0]: https://github.com/marcosgabrielgomes110-collab/rmp/releases/tag/v0.2.0
 [0.1.1]: https://github.com/marcosgabrielgomes110-collab/rmp/releases/tag/v0.1.1
 [0.1.0]: https://github.com/marcosgabrielgomes110-collab/rmp/releases/tag/v0.1.0

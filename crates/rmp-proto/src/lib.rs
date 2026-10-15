@@ -41,10 +41,13 @@ pub const ALPN: &[u8] = b"rmp/1";
 pub const PROTOCOL_NAME: &str = "RMP — Remote Machine Protocol";
 
 /// Wire format version carried in every frame.
-pub const WIRE_VERSION: u8 = 1;
+///
+/// Bumped to 2 when the body encoding moved from positional enum indices to an
+/// explicit [`FrameType`] tag (not wire-compatible with version 1).
+pub const WIRE_VERSION: u8 = 2;
 
 /// Current application protocol version negotiated in `Hello`/`HelloAck`.
-pub const PROTO_VERSION: u16 = 1;
+pub const PROTO_VERSION: u16 = 2;
 
 /// Domain-separation prefix for device-key authentication signatures.
 pub const KEY_AUTH_CONTEXT: &[u8] = b"rmp-keyauth-v1";

@@ -142,6 +142,9 @@ pub async fn run(
     }
 
     // --- Attempt 2: password, possibly enrolling a new device key -------------
+    // Connect and verify the server identity *before* prompting for anything.
+    let transport = establish(&opts, &mut known, &key, strict, accept_new, connect_timeout).await?;
+
     let mut new_key: Option<DeviceKey> = None;
     let mut enroll_public_key: Option<Vec<u8>> = None;
     if config.client.offer_enrollment
@@ -153,7 +156,6 @@ pub async fn run(
         new_key = Some(generated);
     }
 
-    let transport = establish(&opts, &mut known, &key, strict, accept_new, connect_timeout).await?;
     let password =
         rpassword::prompt_password(format!("{}@{}'s password: ", target.user, target.host))
             .context("reading password")?;

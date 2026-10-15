@@ -23,7 +23,7 @@ pub struct Header {
 
 /// Encode a message into a complete, length-delimited frame.
 pub fn encode(message: &Message) -> Result<Vec<u8>, ProtoError> {
-    let payload = postcard::to_allocvec(message)?;
+    let payload = message.encode_body()?;
     if payload.len() > MAX_FRAME {
         return Err(ProtoError::TooLarge(payload.len()));
     }
@@ -83,19 +83,11 @@ pub fn decode_header(buf: &[u8]) -> Result<(Header, &[u8]), ProtoError> {
 
 /// Decode a complete frame into a [`Message`].
 ///
-/// The declared frame type is cross-checked against the decoded message so a
-/// stream cannot smuggle a message of a different kind.
+/// The message type comes from the frame header, so decoding is driven by the
+/// explicit [`FrameType`] tag rather than the position of an enum variant.
 pub fn decode(buf: &[u8]) -> Result<Message, ProtoError> {
     let (header, payload) = decode_header(buf)?;
-    let message: Message = postcard::from_bytes(payload)?;
-    let actual = message.frame_type();
-    if actual != header.frame_type {
-        return Err(ProtoError::TypeMismatch {
-            header: header.frame_type.as_u8(),
-            actual: actual.as_u8(),
-        });
-    }
-    Ok(message)
+    Message::decode_body(header.frame_type, payload)
 }
 
 #[cfg(test)]
@@ -252,19 +244,26 @@ mod tests {
     }
 
     #[test]
-    fn rejects_type_mismatch() {
+    fn rejects_wrong_body_for_type() {
         // Build a frame whose header says Data but whose payload is a Ping.
-        let payload = postcard::to_allocvec(&Message::Ping(Ping { nonce: 1 })).unwrap();
+        let payload = postcard::to_allocvec(&Ping { nonce: 1 }).unwrap();
         let mut bytes = Vec::new();
         bytes.extend_from_slice(&MAGIC.to_be_bytes());
         bytes.push(WIRE_VERSION);
         bytes.push(FrameType::Data.as_u8());
         bytes.extend_from_slice(&(payload.len() as u32).to_be_bytes());
         bytes.extend_from_slice(&payload);
-        assert!(matches!(
-            decode(&bytes),
-            Err(ProtoError::TypeMismatch { .. })
-        ));
+        // A Ping body does not decode as a Data body, so this must error.
+        assert!(decode(&bytes).is_err());
+    }
+
+    #[test]
+    fn body_encoding_is_not_enum_tagged() {
+        // The body must contain only the message fields, not an enum tag.
+        // `Ping { nonce: 0 }` -> a single varint 0x00.
+        let frame = encode(&Message::Ping(Ping { nonce: 0 })).unwrap();
+        let (_, body) = decode_header(&frame).unwrap();
+        assert_eq!(body, &[0x00]);
     }
 
     #[test]

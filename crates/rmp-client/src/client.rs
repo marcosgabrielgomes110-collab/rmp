@@ -234,7 +234,10 @@ impl Client {
             bail!("expected HelloAck, got {:?}", ack.frame_type());
         };
         if proto_version != rmp_proto::PROTO_VERSION {
-            bail!("protocol version mismatch: server={proto_version}");
+            bail!(
+                "protocol version mismatch: server={proto_version}, client={}",
+                rmp_proto::PROTO_VERSION
+            );
         }
         Ok((send, recv))
     }
