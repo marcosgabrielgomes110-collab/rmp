@@ -25,6 +25,7 @@ pub struct FileConfig {
 
 /// `[server]` — daemon behavior.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
 pub struct Server {
     /// Enable the server. `false` makes `rmp serve` refuse to start.
     pub enabled: bool,
@@ -48,6 +49,7 @@ pub struct Server {
 
 /// `[auth]` — authentication policy.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
 pub struct Auth {
     /// Master switch for password authentication.
     pub password_enabled: bool,
@@ -65,6 +67,7 @@ pub struct Auth {
 
 /// `[security]` — network policy and timeouts.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
 pub struct Security {
     /// Addresses allowed to connect (empty = any).
     pub allowed_cidrs: Vec<String>,
@@ -78,6 +81,7 @@ pub struct Security {
 
 /// `[logging]` — logging policy.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
 pub struct Logging {
     /// Write log files in the state directory.
     pub enabled: bool,
@@ -93,6 +97,7 @@ pub struct Logging {
 
 /// `[client]` — behavior of `rmp connect`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
 pub struct Client {
     /// Enforce host key pinning (never disable in production).
     pub strict_host_key: bool,
@@ -261,4 +266,33 @@ connect_timeout_secs = 10
 idle_timeout_secs = 600
 "#
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn partial_config_is_accepted() {
+        // A config missing newer fields must still parse, with defaults filled in.
+        let text = r#"
+            [server]
+            listen = "0.0.0.0:2222"
+            username = "dev"
+        "#;
+        let cfg: FileConfig = toml::from_str(text).unwrap();
+        assert_eq!(cfg.server.username, "dev");
+        assert!(cfg.server.allow_file_transfer, "defaults applied");
+        assert_eq!(cfg.auth.max_auth_attempts, 5);
+    }
+
+    #[test]
+    fn unknown_fields_are_ignored() {
+        let text = r#"
+            [server]
+            username = "dev"
+            some_future_option = true
+        "#;
+        assert!(toml::from_str::<FileConfig>(text).is_ok());
+    }
 }
