@@ -44,17 +44,46 @@ pub async fn run(
     Ok(0)
 }
 
-/// Split a `user@host:path` spec.
+/// Split a remote spec into `(user@host[:port], path)`.
+///
+/// Accepts `user@host:path` (scp-style) and `user@host/path`, and bracketed
+/// IPv6 hosts: `user@[::1]:path` / `user@[::1]/path`.
 fn split_remote(s: &str) -> Option<(String, String)> {
     let (user, rest) = s.split_once('@')?;
     if user.is_empty() || user.contains('/') {
         return None;
     }
-    let (host, path) = rest.split_once(':')?;
-    if host.is_empty() || path.is_empty() {
-        return None;
+
+    // Bracketed IPv6 host.
+    if let Some(after) = rest.strip_prefix('[') {
+        let end = after.find(']')?;
+        let host = &after[..end];
+        let tail = &after[end + 1..];
+        let path = tail.strip_prefix(':').unwrap_or(tail).to_string();
+        if host.is_empty() || path.is_empty() {
+            return None;
+        }
+        return Some((format!("{user}@[{host}]"), path));
     }
-    Some((format!("{user}@{host}"), path.to_string()))
+
+    // `user@host:path`
+    if let Some((host, path)) = rest.split_once(':') {
+        if host.is_empty() || path.is_empty() {
+            return None;
+        }
+        return Some((format!("{user}@{host}"), path.to_string()));
+    }
+
+    // `user@host/path` (the path keeps its leading '/')
+    if let Some(idx) = rest.find('/') {
+        let (host, path) = rest.split_at(idx);
+        if host.is_empty() || path.is_empty() {
+            return None;
+        }
+        return Some((format!("{user}@{host}"), path.to_string()));
+    }
+
+    None
 }
 
 /// Returns `(remote_spec, remote_path, local_path, upload)`.
@@ -92,5 +121,36 @@ mod tests {
     #[test]
     fn both_local_is_an_error() {
         assert!(classify("./a", "./b").is_err());
+    }
+
+    #[test]
+    fn accepts_slash_separator_and_ipv6() {
+        // `user@host/path` (path is absolute)
+        let (r, rp, _, up) = classify("./a", "dev@host/usr/local/bin/x").unwrap();
+        assert_eq!(
+            (r.as_str(), rp.as_str(), up),
+            ("dev@host", "/usr/local/bin/x", true)
+        );
+        // bracketed IPv6
+        let (r, rp, _, up) = classify("./a", "dev@[::1]:/tmp/x").unwrap();
+        assert_eq!((r.as_str(), rp.as_str(), up), ("dev@[::1]", "/tmp/x", true));
+        let (r, rp, _, _) = classify("dev@[::1]/tmp/x", "./a").unwrap();
+        assert_eq!((r.as_str(), rp.as_str()), ("dev@[::1]", "/tmp/x"));
+    }
+
+    #[test]
+    fn parses_ipv6_targets() {
+        let t = crate::authflow::parse_target("dev@[::1]:2222", 2222).unwrap();
+        assert_eq!((t.host.as_str(), t.port), ("::1", 2222));
+        assert_eq!(t.key(), "[::1]:2222");
+
+        let t = crate::authflow::parse_target("dev@::1", 2222).unwrap();
+        assert_eq!((t.host.as_str(), t.port), ("::1", 2222));
+
+        let t = crate::authflow::parse_target("dev@192.168.56.111:3333", 2222).unwrap();
+        assert_eq!(
+            (t.host.as_str(), t.port, t.key().as_str()),
+            ("192.168.56.111", 3333, "192.168.56.111:3333")
+        );
     }
 }

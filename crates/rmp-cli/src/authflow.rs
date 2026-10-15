@@ -26,9 +26,40 @@ pub struct Target {
 }
 
 impl Target {
-    /// The `host:port` key used for `known_hosts`.
+    /// The `host:port` key used for `known_hosts` (IPv6 hosts are bracketed).
     pub fn key(&self) -> String {
-        format!("{}:{}", self.host, self.port)
+        if self.host.contains(':') {
+            format!("[{}]:{}", self.host, self.port)
+        } else {
+            format!("{}:{}", self.host, self.port)
+        }
+    }
+}
+
+/// Split `host[:port]`, supporting bracketed IPv6 literals (`[::1]:2222`) and
+/// bare IPv6 (`::1`).
+fn split_host_port(rest: &str, default_port: u16) -> Result<(String, u16)> {
+    if let Some(after) = rest.strip_prefix('[') {
+        let end = after
+            .find(']')
+            .context("invalid IPv6 address (missing ']')")?;
+        let host = &after[..end];
+        let tail = &after[end + 1..];
+        let port = match tail.strip_prefix(':') {
+            Some(p) => p.parse().context("invalid port")?,
+            None if tail.is_empty() => default_port,
+            None => bail!("unexpected characters after IPv6 address"),
+        };
+        if host.is_empty() {
+            bail!("empty host");
+        }
+        return Ok((host.to_string(), port));
+    }
+
+    // Bare host: IPv4/hostname[:port]; a bare IPv6 (multiple ':') uses no port.
+    match rest.rsplit_once(':') {
+        Some((h, p)) if !h.contains(':') => Ok((h.to_string(), p.parse().context("invalid port")?)),
+        _ => Ok((rest.to_string(), default_port)),
     }
 }
 
@@ -40,10 +71,7 @@ pub fn parse_target(raw: &str, default_port: u16) -> Result<Target> {
     if user.is_empty() {
         bail!("missing user in target");
     }
-    let (host, port) = match rest.rsplit_once(':') {
-        Some((h, p)) => (h.to_string(), p.parse().context("invalid port")?),
-        None => (rest.to_string(), default_port),
-    };
+    let (host, port) = split_host_port(rest, default_port)?;
     if host.is_empty() {
         bail!("missing host in target");
     }

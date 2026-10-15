@@ -11,6 +11,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Fuzzing of the wire format and 0-RTT resumption.
 
+## [0.5.1] - 2026-10-15
+
+### Fixed
+
+- CLI accepts **IPv6 literal** targets: `rmp connect user@[::1]:2222` and bare IPv6
+  (`user@::1`); the `known_hosts` key is bracketed (`[::1]:2222`) for IPv6 hosts. The
+  transport (QUIC over UDP) and the CIDR allow/deny lists already supported IPv6.
+- `rmp cp` accepts the `/` separator (`user@host/path`) in addition to `:`, and bracketed
+  IPv6 hosts (`user@[::1]:/path`).
+
 ## [0.5.0] - 2026-10-15
 
 ### Changed
@@ -106,7 +116,8 @@ Initial MVP: a functional, tested, SSH-like remote shell.
 - **Logging**: rotating `rmp.log` (everything) and `audit.log` (security events only).
 - Fully commented [configuration example](config.example.toml).
 
-[Unreleased]: https://github.com/marcosgabrielgomes110-collab/rmp/compare/v0.5.0...HEAD
+[Unreleased]: https://github.com/marcosgabrielgomes110-collab/rmp/compare/v0.5.1...HEAD
+[0.5.1]: https://github.com/marcosgabrielgomes110-collab/rmp/releases/tag/v0.5.1
 [0.5.0]: https://github.com/marcosgabrielgomes110-collab/rmp/releases/tag/v0.5.0
 [0.4.0]: https://github.com/marcosgabrielgomes110-collab/rmp/releases/tag/v0.4.0
 [0.3.0]: https://github.com/marcosgabrielgomes110-collab/rmp/releases/tag/v0.3.0

@@ -106,6 +106,9 @@ rmp connect alice@host:2222
 #   na 1ª vez mostra a fingerprint e pede confirmação (TOFU), depois a senha
 ```
 
+**IPv6** é suportado (transporte, CIDR e endereços literais): use colchetes —
+`rmp connect user@[::1]:2222` ou `rmp cp x 'dev@[::1]:/tmp/x'`.
+
 Flags úteis:
 
 ```sh
@@ -195,7 +198,7 @@ Para login como **root**: `rmp init --root` (ou `rmp passwd --root` + `allow_roo
 
 ```sh
 make            # binário release (LTO + strip) em target/release/rmp
-make test       # 68 testes (unit + integração end-to-end)
+make test       # 70 testes (unit + integração end-to-end)
 make clippy     # lint (warnings = erro)
 make install    # instala em $(PREFIX)/bin
 make dist       # empacota dist/rmp-<versão>-<os>-<arch>.tar.gz

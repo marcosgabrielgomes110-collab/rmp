@@ -1339,7 +1339,7 @@ dependencies = [
 
 [[package]]
 name = "rmp-cli"
-version = "0.5.0"
+version = "0.5.1"
 dependencies = [
  "anyhow",
  "clap",
@@ -1360,7 +1360,7 @@ dependencies = [
 
 [[package]]
 name = "rmp-client"
-version = "0.5.0"
+version = "0.5.1"
 dependencies = [
  "anyhow",
  "libc",
@@ -1375,7 +1375,7 @@ dependencies = [
 
 [[package]]
 name = "rmp-crypto"
-version = "0.5.0"
+version = "0.5.1"
 dependencies = [
  "argon2",
  "ed25519-dalek",
@@ -1395,7 +1395,7 @@ dependencies = [
 
 [[package]]
 name = "rmp-dirs"
-version = "0.5.0"
+version = "0.5.1"
 dependencies = [
  "anyhow",
  "directories",
@@ -1403,7 +1403,7 @@ dependencies = [
 
 [[package]]
 name = "rmp-proto"
-version = "0.5.0"
+version = "0.5.1"
 dependencies = [
  "postcard",
  "serde",
@@ -1413,7 +1413,7 @@ dependencies = [
 
 [[package]]
 name = "rmp-server"
-version = "0.5.0"
+version = "0.5.1"
 dependencies = [
  "anyhow",
  "hex",
