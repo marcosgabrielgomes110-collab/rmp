@@ -14,6 +14,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   PID file and the systemd service. Exits non-zero when it finds errors.
 - `rmp known-hosts list|update|remove`: inspect and edit the client trust store
   without hand-editing the file. Hosts accept optional ports and IPv6 literals.
+- `rmp keys list|revoke`: audit and revoke server-side device keys by fingerprint
+  or public-key hex. Revocation applies to the next login; the last key is
+  protected from revocation when password authentication is disabled.
 - `rmp connect` / `rmp cp --update-host-key`: deliberately update a changed
   server fingerprint in `known_hosts` after showing the old and new values.
 - `rmp init --new-host-key`: rotate the server host key explicitly. Without it,

@@ -1344,6 +1344,7 @@ dependencies = [
  "anyhow",
  "clap",
  "directories",
+ "hex",
  "rmp-client",
  "rmp-crypto",
  "rmp-dirs",

@@ -134,6 +134,17 @@ rmp known-hosts update host:2222 <fingerprint-hex>
 rmp known-hosts remove host:2222
 ```
 
+As chaves de dispositivo autorizadas no servidor também têm CLI:
+
+```sh
+rmp keys list
+rmp keys revoke <fingerprint-ou-chave-publica-hex>
+```
+
+A revogação vale no próximo login (o servidor relê `authorized_keys` a cada
+tentativa) e é recusada se for a última chave com a autenticação por senha
+desligada.
+
 > **Conta RMP ≠ usuário do Linux.** O servidor aceita a conta definida em
 > `server.username` (mais `root`, se `allow_root = true`). `rmp connect mg@host`
 > não autentica por você ser `mg` no Linux; use o nome configurado no servidor.

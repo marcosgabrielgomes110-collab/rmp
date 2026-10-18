@@ -16,6 +16,7 @@ mod cmd_connect;
 mod cmd_cp;
 mod cmd_doctor;
 mod cmd_init;
+mod cmd_keys;
 mod cmd_known_hosts;
 mod cmd_passwd;
 mod cmd_serve;
@@ -168,6 +169,13 @@ enum Command {
         #[command(subcommand)]
         action: cmd_known_hosts::Action,
     },
+    /// List or revoke server-side device keys (`authorized_keys`).
+    Keys {
+        #[command(flatten)]
+        dirs: DirArgs,
+        #[command(subcommand)]
+        action: cmd_keys::Action,
+    },
     /// Set or replace the access password.
     Passwd {
         #[command(flatten)]
@@ -276,6 +284,10 @@ fn main() -> Result<()> {
         Command::KnownHosts { dirs, action } => {
             let layout = dirs.resolve()?;
             cmd_known_hosts::run(&layout, action)
+        }
+        Command::Keys { dirs, action } => {
+            let layout = dirs.resolve()?;
+            cmd_keys::run(&layout, action)
         }
         Command::Passwd { dirs, user, root } => {
             let layout = dirs.resolve()?;
