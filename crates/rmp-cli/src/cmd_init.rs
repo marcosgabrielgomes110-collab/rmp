@@ -56,6 +56,10 @@ pub fn run(
         None
     };
 
+    // Prepare the config before touching any state: an invalid existing config
+    // must abort here, not after the host key/password files were replaced.
+    let new_config = prepare_config(layout, username, listen, with_root)?;
+
     let password = prompt_new_password("New password for remote access: ")?;
 
     // Identity (secret) → data directory. A re-init preserves the host key by
@@ -92,12 +96,9 @@ pub fn run(
     // changes, old credentials must not silently authenticate as the new one.
     migrate_device_keys(layout, old_user.as_deref(), username)?;
 
-    // Configuration (commented template) → config directory.
-    std::fs::write(
-        layout.config_file(),
-        config::template(username, listen, with_root),
-    )
-    .context("writing config.toml")?;
+    // Configuration → config directory. An existing file keeps its comments
+    // and custom settings; only the fields controlled by `init` are updated.
+    std::fs::write(layout.config_file(), new_config).context("writing config.toml")?;
 
     let key_status = if had_state && !new_host_key {
         "preserved"
@@ -151,6 +152,57 @@ pub fn run(
     println!("  rmp connect {username}@<this-host>:{}", port_of(listen));
 
     Ok(())
+}
+
+/// Build the config text written by `init`.
+///
+/// Fresh installs get the fully commented template. On re-init, the existing
+/// file is edited in place (preserving comments and all settings not controlled
+/// by `init`) and only `server.username`, `server.listen` and `auth.allow_root`
+/// are updated.
+fn prepare_config(
+    layout: &Layout,
+    username: &str,
+    listen: &str,
+    with_root: bool,
+) -> Result<String> {
+    let path = layout.config_file();
+    if !path.exists() {
+        return Ok(config::template(username, listen, with_root));
+    }
+    let text =
+        std::fs::read_to_string(&path).with_context(|| format!("reading {}", path.display()))?;
+    if text.trim().is_empty() {
+        return Ok(config::template(username, listen, with_root));
+    }
+
+    let mut document: toml_edit::DocumentMut = text.parse().with_context(|| {
+        format!(
+            "parsing {}; fix or move it aside before running `rmp init`",
+            path.display()
+        )
+    })?;
+
+    let server = config_table(&mut document, "server");
+    server["username"] = toml_edit::value(username);
+    server["listen"] = toml_edit::value(listen);
+
+    let auth = config_table(&mut document, "auth");
+    auth["allow_root"] = toml_edit::value(with_root);
+
+    Ok(document.to_string())
+}
+
+fn config_table<'a>(
+    document: &'a mut toml_edit::DocumentMut,
+    name: &str,
+) -> &'a mut toml_edit::Table {
+    if !document.contains_key(name) || !document[name].is_table() {
+        document[name] = toml_edit::Item::Table(toml_edit::Table::new());
+    }
+    document[name]
+        .as_table_mut()
+        .expect("table was just ensured")
 }
 
 /// Load the existing host key or create one.
@@ -260,6 +312,53 @@ mod tests {
 
         let reloaded = HostKey::load(&layout.data_dir).unwrap();
         assert_eq!(rotated.fingerprint(), reloaded.fingerprint());
+    }
+
+    #[test]
+    fn reinit_preserves_custom_config_settings_and_comments() {
+        let dir = tempfile::tempdir().unwrap();
+        let layout = Layout::single(dir.path());
+        layout.ensure_config().unwrap();
+        let original = r#"
+[server]
+# keep this comment
+username = "old"
+listen = "0.0.0.0:2222"
+max_sessions = 42
+
+[logging]
+level = "debug"
+"#;
+        std::fs::write(layout.config_file(), original).unwrap();
+
+        let merged = prepare_config(&layout, "new", "127.0.0.1:3333", true).unwrap();
+        let parsed: FileConfig = toml::from_str(&merged).unwrap();
+        assert_eq!(parsed.server.username, "new");
+        assert_eq!(parsed.server.listen, "127.0.0.1:3333");
+        assert_eq!(parsed.server.max_sessions, 42);
+        assert_eq!(parsed.logging.level, "debug");
+        assert!(parsed.auth.allow_root);
+        assert!(merged.contains("# keep this comment"));
+    }
+
+    #[test]
+    fn reinit_rejects_invalid_config_before_touching_state() {
+        let dir = tempfile::tempdir().unwrap();
+        let layout = Layout::single(dir.path());
+        layout.ensure_config().unwrap();
+        std::fs::write(layout.config_file(), "this is not = valid = toml").unwrap();
+
+        let error = prepare_config(&layout, "user", "0.0.0.0:2222", false).unwrap_err();
+        assert!(error.to_string().contains("parsing"));
+    }
+
+    #[test]
+    fn fresh_init_uses_commented_template() {
+        let dir = tempfile::tempdir().unwrap();
+        let layout = Layout::single(dir.path());
+        let text = prepare_config(&layout, "alice", "0.0.0.0:2222", false).unwrap();
+        assert!(text.contains("# RMP — Remote Machine Protocol · configuration"));
+        assert!(text.contains("username = \"alice\""));
     }
 
     #[test]

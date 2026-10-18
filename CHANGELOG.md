@@ -29,6 +29,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- `rmp init` now merges an existing `config.toml` instead of overwriting it
+  with the template. Comments and custom settings are preserved; only
+  `server.username`, `server.listen` and `auth.allow_root` are updated. Invalid
+  TOML aborts before any host key/password state is replaced.
 - Host-key pinning is now enforced after the TLS handshake and before
   authentication, so a mismatch reports both fingerprints and a recovery path
   instead of an opaque rustls `ApplicationVerificationFailure`.

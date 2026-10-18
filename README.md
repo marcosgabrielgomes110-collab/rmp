@@ -160,7 +160,10 @@ use `--update-host-key` para atualizar o `known_hosts`.
 
 O `rmp init` também se recusa a sobrescrever o estado enquanto um `rmp serve`
 está rodando (detectado por PID file e pela porta UDP) e, ao trocar de conta,
-move as chaves de dispositivo antigas para `authorized_keys.bak`.
+move as chaves de dispositivo antigas para `authorized_keys.bak`. Em um
+re-init, o `config.toml` existente é **editado no lugar**: comentários e opções
+customizadas são preservados, e só `server.username`, `server.listen` e
+`auth.allow_root` mudam.
 
 ### Port forwarding
 
