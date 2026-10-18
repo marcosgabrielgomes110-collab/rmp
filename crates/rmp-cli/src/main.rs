@@ -16,6 +16,7 @@ mod cmd_connect;
 mod cmd_cp;
 mod cmd_doctor;
 mod cmd_init;
+mod cmd_known_hosts;
 mod cmd_passwd;
 mod cmd_serve;
 mod cmd_service;
@@ -160,6 +161,13 @@ enum Command {
         #[command(flatten)]
         dirs: DirArgs,
     },
+    /// Inspect or edit the client trust store (`known_hosts`).
+    KnownHosts {
+        #[command(flatten)]
+        dirs: DirArgs,
+        #[command(subcommand)]
+        action: cmd_known_hosts::Action,
+    },
     /// Set or replace the access password.
     Passwd {
         #[command(flatten)]
@@ -264,6 +272,10 @@ fn main() -> Result<()> {
             let layout = dirs.resolve()?;
             let code = cmd_doctor::run(&layout)?;
             std::process::exit(code);
+        }
+        Command::KnownHosts { dirs, action } => {
+            let layout = dirs.resolve()?;
+            cmd_known_hosts::run(&layout, action)
         }
         Command::Passwd { dirs, user, root } => {
             let layout = dirs.resolve()?;

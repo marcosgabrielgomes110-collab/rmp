@@ -73,6 +73,20 @@ impl KnownHosts {
         self.path.as_deref()
     }
 
+    /// Iterate over `(host, fingerprint)` entries in sorted order.
+    pub fn entries(&self) -> impl Iterator<Item = (&str, Fingerprint)> + '_ {
+        self.entries
+            .iter()
+            .map(|(host, fingerprint)| (host.as_str(), *fingerprint))
+    }
+
+    /// Remove `host`. Returns `true` if it existed.
+    ///
+    /// The caller is responsible for calling [`KnownHosts::save`].
+    pub fn remove(&mut self, host: &str) -> bool {
+        self.entries.remove(host).is_some()
+    }
+
     /// Compare a presented fingerprint against the store.
     pub fn check(&self, host: &str, presented: Fingerprint) -> Trust {
         match self.entries.get(host) {
@@ -134,6 +148,23 @@ mod tests {
         assert_eq!(kh.check("h", fp_a), Trust::Match);
         assert_eq!(kh.check("h", fp_b), Trust::Mismatch { expected: fp_a });
         assert_eq!(kh.check("other", fp_a), Trust::Unknown);
+    }
+
+    #[test]
+    fn entries_and_remove() {
+        let fp_a = HostKey::generate().unwrap().fingerprint();
+        let fp_b = HostKey::generate().unwrap().fingerprint();
+        let mut kh = KnownHosts::in_memory();
+        kh.insert("b:2222", fp_b);
+        kh.insert("a:2222", fp_a);
+
+        let entries: Vec<_> = kh.entries().collect();
+        assert_eq!(entries[0].0, "a:2222");
+        assert_eq!(entries[1].0, "b:2222");
+
+        assert!(kh.remove("a:2222"));
+        assert!(!kh.remove("a:2222"));
+        assert_eq!(kh.len(), 1);
     }
 
     #[test]

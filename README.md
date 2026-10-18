@@ -126,6 +126,14 @@ rmp doctor                                 # diagnóstico local (alias: rmp stat
 permissões, `authorized_keys`, `known_hosts`, porta UDP, PID e o serviço systemd.
 Ele sai com código `1` se houver erro, o que é útil em scripts de suporte.
 
+O `known_hosts` também pode ser gerenciado sem editar o arquivo à mão:
+
+```sh
+rmp known-hosts list
+rmp known-hosts update host:2222 <fingerprint-hex>
+rmp known-hosts remove host:2222
+```
+
 > **Conta RMP ≠ usuário do Linux.** O servidor aceita a conta definida em
 > `server.username` (mais `root`, se `allow_root = true`). `rmp connect mg@host`
 > não autentica por você ser `mg` no Linux; use o nome configurado no servidor.
