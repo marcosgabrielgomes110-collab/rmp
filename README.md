@@ -25,7 +25,7 @@ com segurança ligada por padrão, boa performance em redes ruins e configuraç�
 
 ```mermaid
 flowchart TD
-    CLI["rmp-cli<br/>init · serve · connect · passwd"] --> CLIENT["rmp-client"]
+    CLI["rmp-cli<br/>init · serve · connect · exec · cp · passwd"] --> CLIENT["rmp-client"]
     CLI --> SERVER["rmp-server"]
     CLIENT --> CRYPTO["rmp-crypto"]
     SERVER --> CRYPTO
@@ -81,11 +81,11 @@ sequenceDiagram
 | Senha nunca exposta | **OPAQUE (RFC 9807)**; servidor guarda registro resistente a ataque offline |
 | Login sem senha | **Chave de dispositivo Ed25519**; o servidor assina/verifica um nonce (sem replay) |
 | Port forwarding | Túneis `-L` e `-R` sobre streams QUIC (gates `[server] allow_local_forward` / `allow_remote_forward`) |
-| Anti-brute-force | Rate limit + lockout por IP |
+| Anti-brute-force | Rate limit + lockout por usuário/rede (IPv6 agrupado por `/64`) |
 | Controle de acesso | Allow/deny por **CIDR** |
 | Segredos em disco | Diretórios `0700`, arquivos `0600`, `zeroize` em memória |
 | Auditoria | `audit.log` dedicado; comandos podem ser redigidos |
-| Modo root | Fail-closed; rebaixa privilégio (`runuser`) para logins comuns |
+| Modo root | Fail-closed; rebaixa privilégio (`runuser -l`) para logins comuns, inclusive `cp` e `-L` via helper |
 
 Garantias, **não-garantias** e adversários em [`docs/threat-model.md`](docs/threat-model.md).
 
@@ -114,8 +114,16 @@ Flags úteis:
 ```sh
 rmp init --system            # /etc/rmp, /var/lib/rmp, /var/log/rmp
 rmp init --root              # habilita login root (requer o serve rodando como root)
+rmp init --password-stdin    # lê a senha do stdin (automação; com --root lê duas linhas)
+rmp init --force --reset-keys # re-inicializa e revoga as chaves de dispositivo
 rmp passwd                   # troca a senha do usuário
 rmp connect alice@host --accept-new
+rmp connect alice@host --fingerprint <hex-sha256>  # pinagem fora de banda
+rmp exec alice@host -- uname -a                    # executa sem abrir shell
+rmp known-hosts list                               # fingerprints confiáveis
+rmp keys list                                      # chaves de dispositivo autorizadas
+rmp config-check                                   # valida config.toml
+rmp doctor                                         # valida config + permissões no disco
 ```
 
 ### Port forwarding
@@ -145,7 +153,16 @@ rmp cp dev@host:/etc/hosts ./hosts.txt
 
 # porta remota diferente do padrão (2222)
 rmp cp --port 3333 ./x dev@host:/tmp/x
+
+# progresso em stderr
+rmp cp --progress ./grande.iso dev@host:/tmp/grande.iso
+
+# diretórios (recursivo; preserva estrutura e permissões Unix)
+rmp cp -r ./projeto dev@host:/tmp/projeto
+rmp cp -r dev@host:/var/www ./www
 ```
+Symlinks e arquivos especiais são ignorados no modo recursivo. O caminho remoto
+`~`/relativo resolve a partir do home do usuário do servidor.
 Um lado deve ser o **remoto** no formato `user@host:caminho` (dois-pontos, como no `scp`);
 o outro é um caminho local. No lado remoto, `~`/`~/...` e caminhos relativos resolvem a
 partir do **home** do usuário do servidor; caminhos absolutos são usados como estão. As
@@ -187,6 +204,11 @@ timeouts), `[logging]`, `[client]` (inclui `enable_key_auth`, `offer_enrollment`
 
 Para login como **root**: `rmp init --root` (ou `rmp passwd --root` + `allow_root = true`)
 — e o `rmp serve` **precisa rodar como root**; caso contrário ele recusa iniciar.
+Enquanto o daemon roda como root, `rmp cp` e port forwarding local (`-L`) de logins
+comuns são executados por um processo helper via `runuser -l`, com as credenciais do
+usuário. Port forwarding remoto (`-R`) é permitido em portas altas (>= 1024) nesse
+modo; portas privilegiadas exigem `[server] allow_privileged_ports = true` (opt-in
+explícito). `root` não pode ser usado como `server.username`.
 
 ## Documentação
 
@@ -198,7 +220,7 @@ Para login como **root**: `rmp init --root` (ou `rmp passwd --root` + `allow_roo
 
 ```sh
 make            # binário release (LTO + strip) em target/release/rmp
-make test       # 70 testes (unit + integração end-to-end)
+make test       # suíte de testes (unit + integração end-to-end)
 make clippy     # lint (warnings = erro)
 make install    # instala em $(PREFIX)/bin
 make dist       # empacota dist/rmp-<versão>-<os>-<arch>.tar.gz
@@ -209,7 +231,8 @@ make update     # atualiza a partir do Release mais recente do GitHub
 
 O script `scripts/update.sh` verifica o **Release mais recente** do repositório, compara
 com a versão instalada (`rmp --version`) e, se houver versão nova, baixa o binário do seu
-SO/arquitetura, valida que ele executa e instala (via `sudo` se necessário):
+SO/arquitetura, **confere o SHA-256 publicado em `SHA256SUMS`**, valida que ele executa e
+instala (via `sudo` se necessário):
 
 ```sh
 scripts/update.sh            # verifica e, se houver versão nova, pergunta e instala

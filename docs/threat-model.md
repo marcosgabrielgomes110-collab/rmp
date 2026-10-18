@@ -49,8 +49,8 @@
   íntegro (sem TPM/attestation no MVP).
 - **Metadados de rede visíveis:** IPs e volumes de tráfego são observáveis; RMP não faz
   padding/obfuscação de tráfego no MVP.
-- **Sessão 0-RTT:** reduz garantias contra replay se usada para operações com efeito; o
-  protocolo restringe 0-RTT a operações idempotentes.
+- **Sessão 0-RTT:** não é usada. O transporte pode negociar TLS resumption, mas o RMP
+  não retoma sessões de aplicação nem aceita dados 0-RTT.
 - **Segurança depende da força da senha:** OPAQUE eleva o custo de ataque, mas uma senha
   fraca continua adivinhável online.
 
@@ -60,19 +60,26 @@
 |---|---|
 | Sniffing | TLS 1.3 + AEAD em todos os pacotes |
 | MITM / downgrade | TLS 1.3 obrigatório; sem cipher-suites fracas; host key verificada |
-| Brute force online | Rate limiting, backoff exponencial, lockout por usuário/IP; Argon2id como KSF |
+| Brute force online | Rate limiting e lockout por usuário/rede (IPv6 `/64`), com um limiar agregado por rede; Argon2id como KSF |
 | Ataque offline ao registro | OPAQUE (registro não permite testar senhas sem interação) |
 | DoS / amplificação | QUIC Retry/address validation, limites de conexão e de frame |
 | "Store now, decrypt later" | Handshake híbrido X25519 + ML-KEM-768 |
-| Reuso de credenciais no cliente | Chave de dispositivo só destrava localmente com Argon2id; sem envio da senha |
+| Reuso de credenciais no cliente | Chave de dispositivo é uma seed Ed25519 em arquivo `0600`; não há passphrase local nem envio da senha |
 | Roubo de disco | Chaves privadas `0600`/DPAPI; `zeroize` em memória; sem segredos em log |
 
 ## 6. Rate limiting e lockout
 
-- Contador de tentativas por `(usuário, IP)` e global.
-- Backoff exponencial; lockout temporário após `max_auth_attempts` (padrão 5).
-- Respostas de falha indistinguíveis entre "usuário inexistente" e "senha errada" para não
-  vazar existência de contas.
+- Contador de tentativas por `(usuário, rede)` e um contador agregado por rede, com
+  limiar quatro vezes maior para reduzir bloqueios colaterais atrás de NAT.
+- Endereços IPv6 são agrupados por `/64`, para que a rotação dos bits de host não
+  contorne o limite.
+- Lockout temporário e fixo (`auth.lockout_secs`) após `auth.max_auth_attempts`
+  (padrão 5); não há backoff exponencial.
+- Os contadores são em memória (zerados ao reiniciar) e limitados a 4096 entradas por
+  mapa para conter spraying de nomes de usuário.
+- Um login bem-sucedido limpa o contador do usuário e o agregado da rede.
+- Respostas de falha OPAQUE são indistinguíveis entre "usuário inexistente" e "senha
+  errada" para não vazar existência de contas.
 
 ## 7. Criptografia — escolhas e justificativa
 
@@ -84,7 +91,7 @@
 | Derivação de senha | Argon2id | Resistente a GPU/ASIC; parâmetros calibráveis |
 | PAKE | OPAQUE (RFC 9807) | Senha nunca trafega; resiste a ataque offline |
 | Zeroização | `zeroize` | Limita janela de exposição em memória |
-| Comparação | `subtle` (tempo constante) | Evita side-channel de timing |
+| Comparação | igualdade padrão para fingerprints/chaves públicas | Dados públicos; não há comparação de segredos por igualdade |
 
 ## 8. Princípios de implementação
 
@@ -126,9 +133,17 @@ desligado com `[logging] log_commands = false`.
   estiver rodando como root — assim nunca há uma promessa de root que não pode ser
   cumprida com segurança.
 - **Rebaixamento obrigatório:** quando o servidor roda como root, logins do usuário
-  comum são executados via `runuser -u <username> -- <shell>`, de forma que **um login
+  comum são executados via `runuser -l <username> -- <shell>`, de forma que **um login
   normal nunca recebe shell de root**. Somente o login `root` (senha root + `allow_root`)
   obtém um shell privilegiado.
+- **Operações de arquivo/rede passam pelo usuário:** enquanto o servidor roda como root,
+  `rmp cp` e port forwarding local (`-L`) de logins comuns são executados por um helper
+  (`runuser -l <user> -- rmp __helper`), nunca com as credenciais do daemon. Port
+  forwarding remoto (`-R`) aceita portas altas (>= 1024) nesse modo; portas
+  privilegiadas só são liberadas com `[server] allow_privileged_ports = true`, um
+  opt-in explícito em que o daemon root faz o bind em loopback. `root` também não pode
+  ser configurado como `server.username`; o login root sempre usa o registro de senha
+  separado.
 - A seleção do processo a executar é derivada do principal autenticado (`User`/`Root`),
   não de dados enviados pelo cliente.
 

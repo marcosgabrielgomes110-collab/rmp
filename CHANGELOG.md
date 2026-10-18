@@ -7,6 +7,81 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **`rmp exec user@host -- command`**: non-interactive remote execution with the
+  remote exit status and stdout forwarded.
+- **`rmp known-hosts list|remove`** and **`rmp keys list|revoke`**: inspect/remove
+  TOFU entries and revoke enrolled device keys.
+- **`--fingerprint <hex>`** on `connect`, `cp` and `exec` for out-of-band host key
+  pinning (no TOFU prompt and no `known_hosts` update).
+- **`--password-stdin`** for `rmp init`/`rmp passwd` (normal account first, then
+  root when `--root` is used) and **`--reset-keys`** for `rmp init`.
+- **`rmp config-check`**: validates TOML, unknown keys, CIDRs, listen address and
+  limits without starting the server.
+- **`rmp cp -r/--recursive`**: upload/download directory trees (nested directories,
+  empty directories, Unix modes). Symlinks and special files are skipped.
+- **`rmp cp --progress`** and **`[logging] format = "json"`** (structured file
+  logs; console output remains text).
+- **`rmp doctor`**: checks config, directory/file permissions, required secrets and
+  `runuser` availability.
+- Directory overrides (`--dir`, `--system`, `--config-dir`, …) are now global and
+  can appear before or after the subcommand.
+
+### Security
+
+- **Root mode privilege boundary.** While `rmp serve` runs as root, non-root
+  logins run `rmp cp` and local forwarding (`-L`) through a
+  `runuser -l <user> -- rmp __helper` process, so file and network operations use
+  the target user's credentials instead of the daemon's. Remote forwarding (`-R`)
+  permits high ports (>= 1024) in root mode; privileged ports require the explicit
+  `[server] allow_privileged_ports = true` opt-in. `root` can no longer be configured as
+  `server.username` (use `--root`), and root password authentication always uses
+  the separate root record.
+- Passwords, OPAQUE login states and the temporary device-key seed are zeroized
+  when dropped.
+- Files written by `rmp init`/`rmp passwd`/key enrollment are re-tightened to
+  `0600` even when they already existed with looser permissions.
+- `known_hosts` is written atomically through a private temporary file.
+- Device-key enrollment is rejected for the root principal, and device-key
+  authentication is never accepted for `root`.
+- The server rejects an incompatible `Hello.proto_version` before authentication
+  instead of failing later in the session.
+
+### Changed
+
+- **File transfer protocol version 5.** `FileOp::Mkdir`/`FileOp::List` and the
+  `FileEntry` message (0x62) support recursive `rmp cp`. Version 4 had added the
+  expected size to `FileRequest` for `Put`; the server rejects a size mismatch
+  (`ExitStatus{1}`) and discards the temporary file.
+
+### Fixed
+
+- Interrupted uploads no longer commit partial files: `Put` writes to a
+  temporary file and renames only after `Eof`, size verification, `flush` and
+  `fsync`.
+- Truncated downloads are rejected (size is verified and partial local files are
+  removed) instead of being reported as successful.
+- Failed authentication closes the QUIC connection instead of keeping it (and
+  its task) alive until the idle timeout. Handshake/auth exchanges now have
+  timeouts, and `server.max_connections` bounds concurrent connections.
+- PTY output is drained before `ExitStatus`; session/exec channels are bounded so
+  a fast producer cannot grow memory without limit.
+- Forwarded TCP streams wait for both directions, preserving half-closes.
+- `rmp connect -L/-R` accepts bracketed IPv6 addresses (`8080:[::1]:80`).
+- `rmp serve` handles `SIGTERM` (e.g. `systemctl stop`) and logs `server.stop`.
+- Log files have retention (14 days for `rmp.log`, 30 for `audit.log`), are kept
+  in a `0700` directory, and an invalid `logging.level` no longer panics.
+- **Rate limiting is per `(user, network)`** and, with a higher threshold, per
+  network; IPv6 hosts are grouped by `/64`. Successful logins clear both counters.
+- `rmp connect`/`rmp cp` no longer silently fall back to defaults when
+  `config.toml` is malformed; `rmp config-check` reports unknown options.
+- The generated systemd unit includes `NoNewPrivileges`, `ProtectSystem=full`,
+  kernel/control-group protection, `RestrictSUIDSGID`, `LockPersonality`,
+  `RestrictAddressFamilies` and `LimitNOFILE`.
+- Releases publish `SHA256SUMS`; `scripts/update.sh` verifies the downloaded
+  archive before running it.
+
 ### Planned
 
 - Fuzzing of the wire format and 0-RTT resumption.

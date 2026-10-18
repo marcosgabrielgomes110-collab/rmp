@@ -6,7 +6,7 @@ RMP is pre-1.0. Security fixes are applied to the latest release on the default 
 
 | Version | Supported |
 |---|---|
-| 0.1.x   | ✅        |
+| 0.5.x   | ✅        |
 
 ## Reporting a vulnerability
 

@@ -64,8 +64,12 @@ versão (`Hello`/`HelloAck`) recusa versões incompatíveis com erro claro.
 | `0x02` | `HelloAck` | `proto_version: u16`, `server_name`, `server_version`, `capabilities: [u32]` |
 | `0x03` | `Capabilities` | `client: [u32]` (intersecção negociada com o servidor) |
 
+`PROTO_VERSION` atual: **5** (v4: `size` no `FileRequest`; v5: `Mkdir`/`List` e
+`FileEntry`). O servidor recusa versões diferentes no handshake.
+
 Capabilities iniciais: `PTY(0)`, `EXEC(1)`, `SIGNALS(2)`, `ENROLL_KEY(3)`,
-`RESUME_0RTT(4)`.
+`RESUME_0RTT(4)`. O servidor anuncia `[0,1,2]`; a negociação ainda é **informativa** — o
+cliente não restringe recursos pela interseção.
 
 ### 4.2 Autenticação
 
@@ -102,7 +106,8 @@ A assinatura cobre [`key_auth_context`] = `"rmp-keyauth-v1" ‖ len(user) ‖ us
 (resistente a replay). Desafio é enviado **sempre** (mesmo para chave desconhecida), para
 não vazar a existência de chaves.
 
-### 4.3 Controle de canais
+### 4.3 Controle de canais (reservado)
+
 | Código | Mensagem | Campos |
 |---|---|---|
 | `0x20` | `ChannelOpen` | `channel_id: u32`, `kind: ChannelKind` |
@@ -110,20 +115,23 @@ não vazar a existência de chaves.
 | `0x22` | `ChannelClose` | `channel_id: u32`, `reason: CloseReason` |
 | `0x23` | `WindowAdjust` | `channel_id: u32`, `delta_bytes: u32` |
 
-`ChannelKind`: `Session(0)`, `Exec(1)` (futuro: `Forward(2)`, `AgentForward(3)`).
+Esses códigos estão **reservados e não são usados** pela implementação atual: cada sessão,
+forward ou transferência usa um stream QUIC bidi próprio, identificado pelo primeiro frame.
 
 ### 4.4 Liveness e encerramento
 
 | Código | Mensagem | Campos |
 |---|---|---|
-| `0x30` | `Ping` | `nonce: u64` |
-| `0x31` | `Pong` | `nonce: u64` |
+| `0x30` | `Ping` | `nonce: u64` (reservado) |
+| `0x31` | `Pong` | `nonce: u64` (reservado) |
 | `0x32` | `Disconnect` | `reason: DisconnectReason`, `message: string` |
-| `0x33` | `GoAway` | `last_channel: u32` (servidor em shutdown) |
+| `0x33` | `GoAway` | `last_channel: u32` (reservado) |
+
+Liveness usa o PING nativo do QUIC; o servidor envia `Disconnect` em recusas de handshake.
 
 ## 5. Session channel
 
-Stream bidi iniciado pelo cliente, com `channel_id` no preâmbulo.
+Stream bidi iniciado pelo cliente, sem preâmbulo de `channel_id`.
 
 | Código | Mensagem | Direção | Campos |
 |---|---|---|---|
@@ -139,7 +147,8 @@ Stream bidi iniciado pelo cliente, com `channel_id` no preâmbulo.
 | `0x49` | `ExitSignal` | S→C | `signal: string`, `core_dumped: bool`, `message: string` |
 
 Entrega do PTY: `Data` (servidor→cliente) = stdout; não há separação stderr no modo PTY
-(o terminal mescla; separação fica no modo `Exec`).
+(o terminal mescla). No modo `Exec` a implementação atual também multiplexa stdout e
+stderr no mesmo `Data`; separação dedicada não está implementada.
 
 ## 5.1 Port forwarding
 
@@ -172,33 +181,41 @@ home do usuário do servidor.
 
 | Código | Mensagem | Direção | Campos |
 |---|---|---|---|
-| `0x60` | `FileRequest` | C→S | `op: FileOp (Get=0/Put=1)`, `path: string` |
-| `0x61` | `FileResponse` | S→C | `ok: bool`, `size: u64`, `reason?: string` |
+| `0x60` | `FileRequest` | C→S | `op: FileOp (Get=0/Put=1/Mkdir=2/List=3)`, `path: string`, `mode: u32`, `size: u64` |
+| `0x61` | `FileResponse` | S→C | `ok: bool`, `size: u64`, `reason?: string`, `mode: u32` |
+| `0x62` | `FileEntry` | S→C | `name: string`, `kind: FileKind (File=0/Dir=1/Symlink=2)`, `size: u64`, `mode: u32` |
 
 - **Get** (download): `FileRequest{Get}` → `FileResponse{ok,size}` → `Data`… → `Eof`.
-- **Put** (upload): `FileRequest{Put}` → `FileResponse{ok}` → `Data`… → `Eof` →
-  `ExitStatus{0}` (confirmação do servidor).
+- **Put** (upload): `FileRequest{Put, size}` → `FileResponse{ok}` → `Data`… → `Eof` →
+  `ExitStatus{0}` (confirmação do servidor). O servidor só publica o arquivo
+  (temp + `rename`) se o total recebido for igual a `size`; caso contrário responde
+  `ExitStatus{1}` e descarta o temporário.
+- **Mkdir**: `FileRequest{Mkdir, path, mode}` → `FileResponse{ok}` → `ExitStatus{0}`.
+  Cria diretórios intermediários e aplica `mode` quando diferente de zero.
+- **List**: `FileRequest{List, path}` → `FileResponse{ok}` → `FileEntry`… → `Eof`.
+  Apenas entradas diretas (sem recursão); nomes são um único componente. O cliente
+  `rmp cp -r` percorre a árvore combinando `List` + `Get` (download) ou
+  `read_dir` local + `Mkdir` + `Put` (upload). Symlinks e arquivos especiais são
+  ignorados.
 
 Erros (path inválido, sem permissão, etc.) retornam `FileResponse{ok:false, reason}` e a
 stream é encerrada. Gate no servidor: `[server] allow_file_transfer`.
 
 ## 6. Fluxo de controle (flow control)
 
-- Além do flow control nativo do QUIC, há uma janela por canal (`WindowAdjust`) para
-  limitar memória por sessão.
-- Padrão inicial: 1 MiB por direção; ajustável em config.
-- Estouro de janela sem crédito é erro de protocolo.
+- O flow control é o nativo do QUIC, por stream e por conexão. O RMP não implementa
+  janelas de aplicação; `WindowAdjust` está reservado.
+- As filas internas de PTY/exec/forward são limitadas para aplicar backpressure.
 
 ## 7. Perda de pacotes e reconexão
 
 - **Perda/congestionamento:** delegados ao QUIC (retransmissão, PTO, CUBIC/BBR). O
   protocolo de aplicação não trata perda.
-- **Idle timeout:** sem `Pong` dentro de `idle_timeout`, a conexão é encerrada; o cliente
-  tenta reatar.
-- **Resumption 0-RTT:** usado para retomar a sessão quando `RESUME_0RTT` foi negociado.
-  0-RTT é restrito a mensagens idempotentes para evitar replay; a primeira mensagem após
-  resumption não pode acionar efeitos irreversíveis.
-- **Connection migration:** trocar de rede preserva a sessão via Connection ID.
+- **Idle timeout:** sem tráfego dentro de `idle_timeout` (incluindo os PINGs de keepalive),
+  a conexão é encerrada. Não há reatamento automático de sessão de aplicação.
+- **Resumption 0-RTT:** não implementado para sessões; a capability `RESUME_0RTT` é
+  reservada e ignorada.
+- **Connection migration:** suportada pelo QUIC; o RMP não mantém estado de retomada.
 
 ## 8. Erros e códigos
 

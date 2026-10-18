@@ -18,10 +18,15 @@ shell = ""
 motd = ""
 # Maximum number of simultaneous sessions.
 max_sessions = 8
+# Maximum number of simultaneous QUIC connections.
+max_connections = 128
 # Allow clients to open local port forwards (rmp connect -L).
 allow_local_forward = true
 # Allow clients to request remote port forwards (rmp connect -R; binds on 127.0.0.1).
 allow_remote_forward = false
+# In root mode, allow non-root logins to request -R on ports below 1024
+# (the daemon binds them). Explicit opt-in; off by default.
+allow_privileged_ports = false
 # Allow file transfer (rmp cp).
 allow_file_transfer = true
 
@@ -55,6 +60,8 @@ keep_alive_secs = 15
 enabled = true
 # Default log level: trace | debug | info | warn | error (RUST_LOG overrides).
 level = "info"
+# File log format: "text" or "json" (console output stays text).
+format = "text"
 # Maintain a dedicated audit.log with security events.
 audit = true
 # Record executed commands in the audit log.

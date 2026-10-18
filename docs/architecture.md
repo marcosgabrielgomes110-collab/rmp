@@ -7,8 +7,8 @@
 
 - **Seguro por padrão:** nenhum texto claro na rede, autenticação resistente a ataques de
   dicionário, verificação de identidade do servidor.
-- **Rápido:** multiplexação de streams, handshake 1-RTT, resumption 0-RTT, sem
-  head-of-line blocking.
+- **Rápido:** multiplexação de streams, handshake 1-RTT, sem head-of-line blocking.
+  Resumption 0-RTT não é usado para sessões de aplicação.
 - **Robusto em redes ruins:** retransmissão e controle de congestionamento tratam perda de
   pacotes; a sessão sobrevive a troca de rede (connection migration).
 - **Fácil de usar:** setup pede uma senha; conectar é `rmp connect user@host`.
@@ -17,14 +17,16 @@
 ### Não-objetivos (no MVP)
 
 - Relays / NAT traversal / hole punching (o design deixa gancho, mas não implementa).
-- SFTP e port forwarding (previstos, não no MVP).
-- Federação de identidade / SSO.
+- SFTP, agent/X11 forwarding, SSO e multi-usuário (single-account por servidor).
+- Resumption 0-RTT de sessões de aplicação (o transporte QUIC pode retomar TLS, mas o RMP
+  não aceita dados 0-RTT nem reata sessões).
 
 ## 2. Pilha de protocolo
 
 ```
 ┌─────────────────────────────────────────────┐
-│  rmp-cli          init | serve | connect     │
+│  rmp-cli    init | serve | connect | exec    │
+│             cp | passwd | keys | config      │
 ├─────────────────────────────────────────────┤
 │  rmp-client / rmp-server                     │
 │    canais de sessão (PTY, exec), controle    │
@@ -58,7 +60,7 @@ aplicação não implementa retransmissão; ela apenas reage a erro de conexão.
 | `rmp-crypto` | Configuração TLS 1.3 + PQC, gestão de host keys, sub-protocolo OPAQUE, Argon2id, `known_hosts`. |
 | `rmp-server` | Listener QUIC, autenticação, ciclo de vida de sessões, spawn de PTY, políticas (rate limit/lockout), audit log. |
 | `rmp-client` | Conexão, verificação de host key, login, abertura de canal de sessão, I/O do terminal. |
-| `rmp-cli` | Subcomandos `init`, `serve`, `connect`; config TOML; logging; prompts. |
+| `rmp-cli` | Subcomandos `init`, `serve`, `connect`, `exec`, `cp`, `passwd`, `keys`, `known-hosts`, `config-check`; config TOML; logging; prompts. |
 
 ## 4. Estabelecimento de conexão
 
@@ -118,14 +120,15 @@ e o enrollment podem ser desligados (`[auth] allow_key_auth`, `[auth] allow_key_
 
 ## 5. Ciclo de vida da sessão
 
-- **Abertura:** `ChannelOpen(type=session)` seguido de `PtyRequest` + `Shell` (ou `Exec`).
+- **Abertura:** o cliente abre um stream bidi e envia `PtyRequest` + `Shell` (ou `Exec`).
+  Não há `ChannelOpen`: cada sessão é um stream QUIC próprio.
 - **Interação:** `Data` trafega bytes do PTY nos dois sentidos; `WindowChange` envia
   resize; `Signal` envia Ctrl-C e afins; `ExitStatus` encerra.
-- **Keepalive:** `Ping`/`Pong` periódicos; idle timeout configurável detecta links mortos.
-- **Reconexão:** resumption 0-RTT reata a sessão quando o transporte cai; 0-RTT só é usado
-  para operações idempotentes, prevenindo replay.
-- **Encerramento:** `Disconnect { reason }` propaga motivo; o servidor faz cleanup do PTY
-  e do processo filho.
+- **Keepalive:** PING do QUIC (`keep_alive_interval`); o idle timeout configurável
+  detecta links mortos. `Ping`/`Pong` de aplicação são reservados e não usados.
+- **Reconexão:** não há reatamento de sessão de aplicação; uma queda encerra a sessão.
+- **Encerramento:** `Disconnect { reason }` é aceito no controle; o servidor faz cleanup
+  do PTY e do processo filho.
 
 ## 6. Cross-platform
 
@@ -162,6 +165,11 @@ username = "alice"
 shell = ""                # "" = $SHELL / padrão
 motd = ""
 max_sessions = 8
+max_connections = 128
+allow_local_forward = true
+allow_remote_forward = false
+allow_privileged_ports = false  # -R em portas <1024 no root mode (opt-in)
+allow_file_transfer = true
 
 [auth]
 password_enabled = true   # false → nenhuma autenticação por senha
@@ -178,6 +186,7 @@ keep_alive_secs = 15
 [logging]
 enabled = true
 level = "info"
+format = "text"           # text | json (arquivos; console continua texto)
 audit = true
 log_commands = true
 log_dir = ""
@@ -208,9 +217,15 @@ em ambos os sentidos via mensagens `Data` (terminadas por `Eof`).
 ### Modo root
 
 Com `[auth] allow_root = true`, o servidor **exige rodar como root** (senão recusa
-iniciar). Nesse modo, logins do usuário comum são **rebaixados via `runuser`** — um login
-normal nunca recebe shell de root; apenas o login `root` (com a senha root, registrada à
-parte em `password_file.root.bin`) obtém shell privilegiado.
+iniciar). Nesse modo, logins do usuário comum são **rebaixados via `runuser -l`** — um
+login normal nunca recebe shell de root; apenas o login `root` (com a senha root,
+registrada à parte em `password_file.root.bin`) obtém shell privilegiado. Enquanto o
+daemon roda como root, `rmp cp` e port forwarding local (`-L`) de logins comuns são
+executados por um **helper** (`runuser -l <user> -- rmp __helper`), com as credenciais
+do usuário; port forwarding remoto (`-R`) é permitido em portas altas (>= 1024) nesse
+modo. Portas privilegiadas exigem `[server] allow_privileged_ports = true`; o daemon
+(root) faz o bind e o tráfego vai para o cliente. `root` não pode ser usado como
+`server.username`.
 
 
 ### Logs
