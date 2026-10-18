@@ -32,7 +32,7 @@ pub struct LogGuard {
 /// Initialize logging according to `cfg`, returning a guard to keep alive.
 pub fn init(layout: &Layout, cfg: &Logging) -> Result<LogGuard> {
     let console_filter =
-        EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new(cfg.level.clone()));
+        EnvFilter::try_from_default_env().unwrap_or_else(|_| level_filter(&cfg.level));
     let console_layer = fmt::layer()
         .with_target(false)
         .with_writer(std::io::stderr)
@@ -53,49 +53,88 @@ pub fn init(layout: &Layout, cfg: &Logging) -> Result<LogGuard> {
     } else {
         std::path::PathBuf::from(&cfg.log_dir)
     };
-    std::fs::create_dir_all(&dir)?;
+    // Keep log files private even when `log_dir` points outside the state dir.
+    rmp_dirs::create_private_dir(&dir)?;
 
-    let general = tracing_appender::rolling::daily(&dir, rmp_dirs::LOG_FILE);
+    let general = tracing_appender::rolling::Builder::new()
+        .rotation(tracing_appender::rolling::Rotation::DAILY)
+        .filename_prefix(rmp_dirs::LOG_FILE)
+        .max_log_files(14)
+        .build(&dir)?;
     let (general_writer, general_guard) = tracing_appender::non_blocking(general);
 
     // File: verbose for RMP's own crates so nothing we emit is lost.
     let file_filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| {
-        EnvFilter::new(format!(
+        EnvFilter::try_new(format!(
             "warn,rmp={l},rmp_server={l},rmp_client={l},rmp_crypto={l},rmp_proto={l},rmp_dirs={l}",
             l = cfg.level
         ))
+        .unwrap_or_else(|_| EnvFilter::new("info"))
     });
-    let file_layer = fmt::layer()
-        .with_ansi(false)
-        .with_target(true)
-        .with_writer(general_writer)
-        .with_filter(file_filter);
-
     // Audit: only our dedicated target, at INFO and above.
-    let (audit_layer, audit_guard) = if cfg.audit {
-        let appender = tracing_appender::rolling::daily(&dir, rmp_dirs::AUDIT_FILE);
+    let (audit_writer, audit_guard) = if cfg.audit {
+        let appender = tracing_appender::rolling::Builder::new()
+            .rotation(tracing_appender::rolling::Rotation::DAILY)
+            .filename_prefix(rmp_dirs::AUDIT_FILE)
+            .max_log_files(30)
+            .build(&dir)?;
         let (writer, guard) = tracing_appender::non_blocking(appender);
-        let filter = Targets::new()
-            .with_default(LevelFilter::OFF)
-            .with_target(AUDIT_TARGET, LevelFilter::INFO);
-        let layer = fmt::layer()
-            .with_ansi(false)
-            .with_target(false)
-            .with_writer(writer)
-            .with_filter(filter);
-        (Some(layer), Some(guard))
+        (Some(writer), Some(guard))
     } else {
         (None, None)
     };
+    let audit_filter = Targets::new()
+        .with_default(LevelFilter::OFF)
+        .with_target(AUDIT_TARGET, LevelFilter::INFO);
 
-    tracing_subscriber::registry()
-        .with(console_layer)
-        .with(file_layer)
-        .with(audit_layer)
-        .init();
+    let json = cfg.format.eq_ignore_ascii_case("json");
+    if json {
+        let file_layer = fmt::layer()
+            .json()
+            .with_ansi(false)
+            .with_target(true)
+            .with_writer(general_writer)
+            .with_filter(file_filter);
+        let audit_layer = audit_writer.map(|writer| {
+            fmt::layer()
+                .json()
+                .with_ansi(false)
+                .with_target(false)
+                .with_writer(writer)
+                .with_filter(audit_filter)
+        });
+        tracing_subscriber::registry()
+            .with(console_layer)
+            .with(file_layer)
+            .with(audit_layer)
+            .init();
+    } else {
+        let file_layer = fmt::layer()
+            .with_ansi(false)
+            .with_target(true)
+            .with_writer(general_writer)
+            .with_filter(file_filter);
+        let audit_layer = audit_writer.map(|writer| {
+            fmt::layer()
+                .with_ansi(false)
+                .with_target(false)
+                .with_writer(writer)
+                .with_filter(audit_filter)
+        });
+        tracing_subscriber::registry()
+            .with(console_layer)
+            .with(file_layer)
+            .with(audit_layer)
+            .init();
+    }
 
     Ok(LogGuard {
         _general: Some(general_guard),
         _audit: audit_guard,
     })
+}
+
+/// Parse a configured level without panicking on a typo.
+fn level_filter(level: &str) -> EnvFilter {
+    EnvFilter::try_new(level).unwrap_or_else(|_| EnvFilter::new("info"))
 }

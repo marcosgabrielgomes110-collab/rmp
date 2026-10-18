@@ -13,9 +13,21 @@ pub fn run(
     listen: &str,
     force: bool,
     with_root: bool,
+    password_stdin: bool,
+    reset_keys: bool,
 ) -> Result<()> {
     layout.ensure_all()?;
     let _log = crate::logging::init(layout, &Logging::default()).ok();
+
+    if username.trim().is_empty() {
+        bail!("the server username must not be empty");
+    }
+    if username == "root" {
+        bail!(
+            "the server username must not be 'root'; use `rmp init --root` \
+             for root login (separate root password)"
+        );
+    }
 
     let key_path = layout.host_key_file();
     if key_path.exists() && !force {
@@ -24,8 +36,32 @@ pub fn run(
             layout.data_dir.display()
         );
     }
+    if reset_keys {
+        match std::fs::remove_file(layout.authorized_keys_file()) {
+            Ok(()) => println!(
+                "removed device keys: {}",
+                layout.authorized_keys_file().display()
+            ),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) => {
+                return Err(e).with_context(|| {
+                    format!("removing {}", layout.authorized_keys_file().display())
+                })
+            }
+        }
+    } else if force && layout.authorized_keys_file().exists() {
+        eprintln!(
+            "[rmp] warning: --force keeps existing device keys in {}; \
+             use --reset-keys to revoke passwordless logins",
+            layout.authorized_keys_file().display()
+        );
+    }
 
-    let password = prompt_new_password("New password for remote access: ")?;
+    let password = if password_stdin {
+        read_stdin_password("remote access password")?
+    } else {
+        prompt_new_password("New password for remote access: ")?
+    };
 
     // Identity (secret) → data directory.
     let host_key = HostKey::generate().context("generating host key")?;
@@ -45,7 +81,11 @@ pub fn run(
 
     // Optional root password.
     if with_root {
-        let root_pw = prompt_new_password("New password for root access: ")?;
+        let root_pw = if password_stdin {
+            read_stdin_password("root password")?
+        } else {
+            prompt_new_password("New password for root access: ")?
+        };
         let root_file =
             password::enroll(root_pw.as_bytes(), "root", &setup).context("deriving root file")?;
         root_file
@@ -119,13 +159,29 @@ fn port_of(listen: &str) -> u16 {
         .unwrap_or(2222)
 }
 
-fn prompt_new_password(prompt: &str) -> Result<String> {
-    let pw = rpassword::prompt_password(prompt).context("reading password")?;
+/// Read one password line from stdin (for `--password-stdin`).
+pub(crate) fn read_stdin_password(label: &str) -> Result<zeroize::Zeroizing<String>> {
+    let mut line = String::new();
+    std::io::stdin()
+        .read_line(&mut line)
+        .with_context(|| format!("reading {label} from stdin"))?;
+    let line = line.trim_end_matches(['\n', '\r']);
+    if line.is_empty() {
+        bail!("{label} from stdin is empty");
+    }
+    Ok(zeroize::Zeroizing::new(line.to_string()))
+}
+
+fn prompt_new_password(prompt: &str) -> Result<zeroize::Zeroizing<String>> {
+    let pw =
+        zeroize::Zeroizing::new(rpassword::prompt_password(prompt).context("reading password")?);
     if pw.is_empty() {
         bail!("password must not be empty");
     }
-    let confirm = rpassword::prompt_password("Confirm password: ").context("reading password")?;
-    if pw != confirm {
+    let confirm = zeroize::Zeroizing::new(
+        rpassword::prompt_password("Confirm password: ").context("reading password")?,
+    );
+    if *pw != *confirm {
         bail!("passwords do not match");
     }
     Ok(pw)

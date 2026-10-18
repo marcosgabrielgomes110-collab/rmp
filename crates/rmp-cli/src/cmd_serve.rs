@@ -80,8 +80,10 @@ pub async fn run(layout: &Layout, listen_override: Option<String>) -> Result<()>
     opts.denied_cidrs = denied;
     opts.log_commands = config.logging.log_commands;
     opts.max_sessions = config.server.max_sessions;
+    opts.max_connections = config.server.max_connections;
     opts.allow_local_forward = config.server.allow_local_forward;
     opts.allow_remote_forward = config.server.allow_remote_forward;
+    opts.allow_privileged_ports = config.server.allow_privileged_ports;
     opts.allow_file_transfer = config.server.allow_file_transfer;
 
     let listen = listen_override.unwrap_or(config.server.listen.clone());
@@ -126,6 +128,7 @@ pub async fn run(layout: &Layout, listen_override: Option<String>) -> Result<()>
             "disabled"
         }
     );
+    println!("  max connections  : {}", opts.max_connections);
     println!("  host fingerprint : {}", opts.host_key.fingerprint());
     println!("  config           : {}", layout.config_dir.display());
     println!("  data             : {}", layout.data_dir.display());
@@ -147,13 +150,28 @@ pub async fn run(layout: &Layout, listen_override: Option<String>) -> Result<()>
 
     let ep = endpoint.clone();
     tokio::spawn(async move {
-        if tokio::signal::ctrl_c().await.is_ok() {
-            tracing::info!(target: AUDIT_TARGET, event = "server.stop", reason = "signal");
-            ep.close(0u32.into(), b"shutdown");
-        }
+        wait_for_shutdown().await;
+        tracing::info!(target: AUDIT_TARGET, event = "server.stop", reason = "signal");
+        ep.close(0u32.into(), b"shutdown");
     });
 
     rmp_server::serve(endpoint, Arc::new(opts))
         .await
         .context("server error")
+}
+
+/// Wait for Ctrl-C or SIGTERM (systemd sends SIGTERM on `systemctl stop`).
+async fn wait_for_shutdown() {
+    #[cfg(unix)]
+    {
+        use tokio::signal::unix::{signal, SignalKind};
+        if let Ok(mut term) = signal(SignalKind::terminate()) {
+            tokio::select! {
+                _ = tokio::signal::ctrl_c() => {}
+                _ = term.recv() => {}
+            }
+            return;
+        }
+    }
+    let _ = tokio::signal::ctrl_c().await;
 }

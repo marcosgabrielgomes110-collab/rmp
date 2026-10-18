@@ -6,42 +6,259 @@
 use crate::authflow;
 use crate::config::FileConfig;
 use crate::logging::AUDIT_TARGET;
-use anyhow::{bail, Result};
+use anyhow::{bail, Context, Result};
+use rmp_client::Client;
 use rmp_dirs::Layout;
+use rmp_proto::FileKind;
+use std::path::{Path, PathBuf};
 
 /// Run a copy.
+#[allow(clippy::too_many_arguments)]
 pub async fn run(
     src: &str,
     dst: &str,
     layout: &Layout,
     port: u16,
     accept_new_flag: bool,
+    fingerprint: Option<&str>,
+    show_progress: bool,
+    recursive: bool,
 ) -> Result<i32> {
     let _ = layout.ensure_config();
-    let config = FileConfig::load_or_default(&layout.config_file()).unwrap_or_default();
+    let config = FileConfig::load_or_default(&layout.config_file())
+        .with_context(|| format!("reading {}", layout.config_file().display()))?;
     let _log = crate::logging::init(layout, &config.logging).ok();
     let accept_new = accept_new_flag || config.client.accept_new_hosts;
     let idle_secs = config.client.idle_timeout_secs;
+    let pinned = match fingerprint {
+        Some(hex) => Some(rmp_crypto::Fingerprint::from_hex(hex).context("invalid --fingerprint")?),
+        None => None,
+    };
 
     let (remote, remote_path, local_path, upload) = classify(src, dst)?;
     let target = authflow::parse_target(&remote, port)?;
 
-    let client =
-        authflow::connect_authenticated(layout, &config, &target, accept_new, idle_secs, false)
-            .await?;
+    let client = authflow::connect_authenticated(
+        layout, &config, &target, accept_new, idle_secs, false, pinned,
+    )
+    .await?;
+
+    if recursive {
+        let local = Path::new(&local_path);
+        let (files, bytes) = if upload {
+            upload_dir(&client, local, &remote_path, show_progress).await?
+        } else {
+            download_dir(&client, &remote_path, local, show_progress).await?
+        };
+        let event = if upload {
+            "cp.upload_dir"
+        } else {
+            "cp.download_dir"
+        };
+        tracing::info!(target: AUDIT_TARGET, event = event, host = %target.key(),
+                       path = %remote_path, files = files, bytes = bytes);
+        let verb = if upload { "enviado(s)" } else { "recebido(s)" };
+        println!("{verb} {files} arquivo(s), {bytes} bytes");
+        return Ok(0);
+    }
 
     if upload {
-        let n = client.upload(&local_path, &remote_path).await?;
+        if let Ok(meta) = tokio::fs::metadata(&local_path).await {
+            if meta.is_dir() {
+                bail!("{} is a directory; use -r/--recursive", local_path);
+            }
+        }
+        let n = if show_progress {
+            let mut last = 0u64;
+            let n = client
+                .upload_with(&local_path, &remote_path, |done| {
+                    if done.saturating_sub(last) >= 1024 * 1024 {
+                        eprint!("\r[rmp] enviando {done} bytes");
+                        last = done;
+                    }
+                })
+                .await?;
+            eprintln!();
+            n
+        } else {
+            client.upload(&local_path, &remote_path).await?
+        };
         tracing::info!(target: AUDIT_TARGET, event = "cp.upload", host = %target.key(),
                        path = %remote_path, bytes = n);
         println!("enviado   {local_path}  ->  {remote}:{remote_path}  ({n} bytes)");
     } else {
-        let n = client.download(&remote_path, &local_path).await?;
+        let n = if show_progress {
+            let mut last = 0u64;
+            let n = client
+                .download_with(&remote_path, &local_path, |done| {
+                    if done.saturating_sub(last) >= 1024 * 1024 {
+                        eprint!("\r[rmp] recebendo {done} bytes");
+                        last = done;
+                    }
+                })
+                .await?;
+            eprintln!();
+            n
+        } else {
+            client.download(&remote_path, &local_path).await?
+        };
         tracing::info!(target: AUDIT_TARGET, event = "cp.download", host = %target.key(),
                        path = %remote_path, bytes = n);
         println!("recebido  {remote}:{remote_path}  ->  {local_path}  ({n} bytes)");
     }
     Ok(0)
+}
+
+/// Join a remote directory and a single entry name.
+fn join_remote(base: &str, name: &str) -> String {
+    if base.ends_with('/') {
+        format!("{base}{name}")
+    } else {
+        format!("{base}/{name}")
+    }
+}
+
+/// Reject entry names that could escape the destination directory.
+fn safe_name(name: &str) -> bool {
+    !name.is_empty()
+        && name != "."
+        && name != ".."
+        && !name.contains('/')
+        && !name.contains('\\')
+        && !name.contains('\0')
+}
+
+#[cfg(unix)]
+fn local_mode(path: &Path) -> u32 {
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::metadata(path)
+        .map(|m| m.permissions().mode() & 0o7777)
+        .unwrap_or(0)
+}
+
+#[cfg(not(unix))]
+fn local_mode(_path: &Path) -> u32 {
+    0
+}
+
+#[cfg(unix)]
+fn apply_dir_mode(path: &Path, mode: u32) {
+    if mode == 0 {
+        return;
+    }
+    use std::os::unix::fs::PermissionsExt;
+    let _ = std::fs::set_permissions(path, std::fs::Permissions::from_mode(mode & 0o7777));
+}
+
+#[cfg(not(unix))]
+fn apply_dir_mode(_path: &Path, _mode: u32) {}
+
+/// Upload a local directory tree, creating remote directories as needed.
+async fn upload_dir(
+    client: &Client,
+    local_root: &Path,
+    remote_root: &str,
+    show_progress: bool,
+) -> Result<(u64, u64)> {
+    let meta = tokio::fs::metadata(local_root)
+        .await
+        .with_context(|| format!("reading {}", local_root.display()))?;
+    if !meta.is_dir() {
+        bail!("{} is not a directory", local_root.display());
+    }
+
+    let mut stack: Vec<(PathBuf, String)> =
+        vec![(local_root.to_path_buf(), remote_root.to_string())];
+    let mut files = 0u64;
+    let mut bytes = 0u64;
+
+    while let Some((local_dir, remote_dir)) = stack.pop() {
+        client.mkdir(&remote_dir, local_mode(&local_dir)).await?;
+
+        let mut entries = tokio::fs::read_dir(&local_dir)
+            .await
+            .with_context(|| format!("reading {}", local_dir.display()))?;
+        while let Some(entry) = entries.next_entry().await? {
+            let Some(name) = entry.file_name().to_str().map(str::to_owned) else {
+                eprintln!("[rmp] pulando nome não-UTF-8 em {}", local_dir.display());
+                continue;
+            };
+            if !safe_name(&name) {
+                bail!("unsafe file name {:?} in {}", name, local_dir.display());
+            }
+            let file_type = entry.file_type().await?;
+            let remote_child = join_remote(&remote_dir, &name);
+            let local_child = entry.path();
+
+            if file_type.is_dir() {
+                stack.push((local_child, remote_child));
+            } else if file_type.is_file() {
+                let size = entry.metadata().await?.len();
+                client
+                    .upload(&local_child, &remote_child)
+                    .await
+                    .with_context(|| format!("uploading {}", local_child.display()))?;
+                files += 1;
+                bytes += size;
+                if show_progress {
+                    eprintln!("[rmp] enviado {remote_child} ({size} bytes)");
+                }
+            } else {
+                eprintln!(
+                    "[rmp] pulando {} (não é arquivo nem diretório)",
+                    local_child.display()
+                );
+            }
+        }
+    }
+    Ok((files, bytes))
+}
+
+/// Download a remote directory tree, creating local directories as needed.
+async fn download_dir(
+    client: &Client,
+    remote_root: &str,
+    local_root: &Path,
+    show_progress: bool,
+) -> Result<(u64, u64)> {
+    let mut stack: Vec<(String, PathBuf, u32)> =
+        vec![(remote_root.to_string(), local_root.to_path_buf(), 0)];
+    let mut files = 0u64;
+    let mut bytes = 0u64;
+
+    while let Some((remote_dir, local_dir, mode)) = stack.pop() {
+        tokio::fs::create_dir_all(&local_dir)
+            .await
+            .with_context(|| format!("creating {}", local_dir.display()))?;
+        apply_dir_mode(&local_dir, mode);
+
+        for entry in client.list(&remote_dir).await? {
+            if !safe_name(&entry.name) {
+                bail!("remote sent unsafe file name {:?}", entry.name);
+            }
+            let remote_child = join_remote(&remote_dir, &entry.name);
+            let local_child = local_dir.join(&entry.name);
+
+            match entry.kind {
+                FileKind::Dir => stack.push((remote_child, local_child, entry.mode)),
+                FileKind::File => {
+                    client
+                        .download(&remote_child, &local_child)
+                        .await
+                        .with_context(|| format!("downloading {remote_child}"))?;
+                    files += 1;
+                    bytes += entry.size;
+                    if show_progress {
+                        eprintln!("[rmp] recebido {remote_child} ({} bytes)", entry.size);
+                    }
+                }
+                FileKind::Symlink => {
+                    eprintln!("[rmp] pulando symlink {remote_child}");
+                }
+            }
+        }
+    }
+    Ok((files, bytes))
 }
 
 /// Split a remote spec into `(user@host[:port], path)`.

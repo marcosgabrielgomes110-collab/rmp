@@ -100,6 +100,15 @@ fn render_unit(bin: &Path, user: &str, home: &Path) -> String {
          ExecStart={bin} serve\n\
          Restart=on-failure\n\
          RestartSec=2\n\
+         NoNewPrivileges=true\n\
+         ProtectSystem=full\n\
+         ProtectKernelTunables=true\n\
+         ProtectKernelModules=true\n\
+         ProtectControlGroups=true\n\
+         RestrictSUIDSGID=true\n\
+         LockPersonality=true\n\
+         RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX\n\
+         LimitNOFILE=65536\n\
          \n\
          [Install]\n\
          WantedBy=multi-user.target\n",
@@ -171,6 +180,10 @@ mod tests {
         assert!(unit.contains("Environment=HOME=/home/dev"));
         assert!(unit.contains("ExecStart=/usr/local/bin/rmp serve"));
         assert!(unit.contains("Restart=on-failure"));
+        assert!(unit.contains("NoNewPrivileges=true"));
+        assert!(unit.contains("ProtectSystem=full"));
+        assert!(unit.contains("RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX"));
+        assert!(unit.contains("LimitNOFILE=65536"));
         assert!(unit.contains("WantedBy=multi-user.target"));
     }
 }

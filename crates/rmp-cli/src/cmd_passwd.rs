@@ -7,7 +7,7 @@ use rmp_crypto::{password, HostKey};
 use rmp_dirs::Layout;
 
 /// Set the password for `account` (the configured user, or `root`).
-pub fn run(layout: &Layout, user: Option<String>, root: bool) -> Result<()> {
+pub fn run(layout: &Layout, user: Option<String>, root: bool, password_stdin: bool) -> Result<()> {
     let _log = crate::logging::init(layout, &Logging::default()).ok();
 
     // Host key must exist (i.e. the server was initialized).
@@ -27,8 +27,15 @@ pub fn run(layout: &Layout, user: Option<String>, root: bool) -> Result<()> {
             }
         }
     };
+    if !root && account == "root" {
+        bail!("use `rmp passwd --root` to set the root password");
+    }
 
-    let pw = prompt_new_password(&format!("New password for '{account}': "))?;
+    let pw = if password_stdin {
+        crate::cmd_init::read_stdin_password("password")?
+    } else {
+        prompt_new_password(&format!("New password for '{account}': "))?
+    };
     let file = password::enroll(pw.as_bytes(), &account, &setup).context("deriving file")?;
 
     let path = if root {
@@ -47,13 +54,16 @@ pub fn run(layout: &Layout, user: Option<String>, root: bool) -> Result<()> {
     Ok(())
 }
 
-fn prompt_new_password(prompt: &str) -> Result<String> {
-    let pw = rpassword::prompt_password(prompt).context("reading password")?;
+fn prompt_new_password(prompt: &str) -> Result<zeroize::Zeroizing<String>> {
+    let pw =
+        zeroize::Zeroizing::new(rpassword::prompt_password(prompt).context("reading password")?);
     if pw.is_empty() {
         bail!("password must not be empty");
     }
-    let confirm = rpassword::prompt_password("Confirm password: ").context("reading password")?;
-    if pw != confirm {
+    let confirm = zeroize::Zeroizing::new(
+        rpassword::prompt_password("Confirm password: ").context("reading password")?,
+    );
+    if *pw != *confirm {
         bail!("passwords do not match");
     }
     Ok(pw)

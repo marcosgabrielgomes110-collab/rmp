@@ -7,7 +7,9 @@
 use crate::config::FileConfig;
 use crate::logging::AUDIT_TARGET;
 use anyhow::{bail, Context, Result};
-use rmp_client::{transport, Client, ClientOptions, DeviceKey, KnownHosts, Transport, Trust};
+use rmp_client::{
+    transport, Client, ClientOptions, DeviceKey, Fingerprint, KnownHosts, Transport, Trust,
+};
 use rmp_dirs::Layout;
 use std::io::Write;
 use std::net::{SocketAddr, ToSocketAddrs};
@@ -106,6 +108,7 @@ pub async fn connect_authenticated(
     accept_new: bool,
     idle_secs: u64,
     offer_enrollment: bool,
+    pinned: Option<Fingerprint>,
 ) -> Result<Client> {
     let strict = config.client.strict_host_key;
     if !strict {
@@ -128,8 +131,9 @@ pub async fn connect_authenticated(
         server_name: target.host.clone(),
         idle_timeout: Duration::from_secs(idle_secs),
         keep_alive: Duration::from_secs(15),
-        // When pinning is disabled we always connect in TOFU mode.
-        expected_fingerprint: if strict { known.get(&key) } else { None },
+        // An explicit --fingerprint always pins; otherwise use known_hosts
+        // when strict checking is enabled (TOFU when it is not).
+        expected_fingerprint: pinned.or(if strict { known.get(&key) } else { None }),
     };
 
     let id_path = identity_file(layout, &target.host, target.port, &target.user);
@@ -152,7 +156,16 @@ pub async fn connect_authenticated(
 
     // --- Attempt 1: device key (passwordless) ---------------------------------
     if let (Some(device_key), true) = (&device_key, config.client.enable_key_auth) {
-        let tp = establish(&opts, &mut known, &key, strict, accept_new, connect_timeout).await?;
+        let tp = establish(
+            &opts,
+            &mut known,
+            &key,
+            strict,
+            accept_new,
+            connect_timeout,
+            pinned,
+        )
+        .await?;
         match tp.authenticate_key(&target.user, device_key).await {
             Ok(client) => {
                 tracing::info!(target: AUDIT_TARGET, event = "auth.success", host = %key,
@@ -168,7 +181,16 @@ pub async fn connect_authenticated(
 
     // --- Attempt 2: password, possibly enrolling a new device key -------------
     // Connect and verify the server identity *before* prompting for anything.
-    let tp = establish(&opts, &mut known, &key, strict, accept_new, connect_timeout).await?;
+    let tp = establish(
+        &opts,
+        &mut known,
+        &key,
+        strict,
+        accept_new,
+        connect_timeout,
+        pinned,
+    )
+    .await?;
 
     let mut new_key: Option<DeviceKey> = None;
     let mut enroll_public_key: Option<Vec<u8>> = None;
@@ -181,9 +203,10 @@ pub async fn connect_authenticated(
         new_key = Some(generated);
     }
 
-    let password =
+    let password = zeroize::Zeroizing::new(
         rpassword::prompt_password(format!("{}@{}'s password: ", target.user, target.host))
-            .context("reading password")?;
+            .context("reading password")?,
+    );
     let client = tp
         .authenticate_password(&target.user, password.as_bytes(), enroll_public_key)
         .await
@@ -219,6 +242,7 @@ async fn establish(
     strict: bool,
     accept_new: bool,
     connect_timeout: Duration,
+    pinned: Option<Fingerprint>,
 ) -> Result<Transport> {
     let tp = tokio::time::timeout(connect_timeout, transport(opts))
         .await
@@ -227,6 +251,14 @@ async fn establish(
     let fingerprint = tp
         .observed_fingerprint()
         .context("server did not present a certificate")?;
+
+    // The TLS verifier already enforced an explicit pin; do not prompt or
+    // modify known_hosts for an out-of-band fingerprint.
+    if pinned.is_some() {
+        tracing::info!(target: AUDIT_TARGET, event = "host.pinned", host = %key,
+                       fingerprint = %fingerprint);
+        return Ok(tp);
+    }
 
     match known.check(key, fingerprint) {
         Trust::Match => {
