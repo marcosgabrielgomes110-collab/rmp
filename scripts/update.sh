@@ -103,6 +103,21 @@ trap 'rm -rf "$tmp"' EXIT
 echo "Baixando ${asset}..."
 curl -fsSL -o "$tmp/$asset" "$url" || die "download falhou: $url"
 
+# --- checksum ----------------------------------------------------------------
+sums_url="https://github.com/${REPO}/releases/download/v${LATEST}/SHA256SUMS"
+curl -fsSL -o "$tmp/SHA256SUMS" "$sums_url" \
+  || die "SHA256SUMS não encontrado para v${LATEST} (release sem checksums?)"
+line="$(grep -F "  ${asset}" "$tmp/SHA256SUMS" || true)"
+[ -n "$line" ] || die "checksum de ${asset} ausente em SHA256SUMS"
+if command -v sha256sum >/dev/null 2>&1; then
+  (cd "$tmp" && printf '%s\n' "$line" | sha256sum -c -) || die "checksum inválido: ${asset}"
+elif command -v shasum >/dev/null 2>&1; then
+  (cd "$tmp" && printf '%s\n' "$line" | shasum -a 256 -c -) || die "checksum inválido: ${asset}"
+else
+  die "sha256sum ou shasum não encontrado"
+fi
+echo "checksum OK"
+
 # --- extract -----------------------------------------------------------------
 if [ "$ext" = "tar.gz" ]; then
   tar -xzf "$tmp/$asset" -C "$tmp"
