@@ -6,8 +6,8 @@ use quinn::{Connection, Endpoint, RecvStream, SendStream};
 use rmp_crypto::{self as crypto, DeviceKey, Fingerprint, ObservedFingerprint};
 use rmp_proto::{
     key_auth_context, AuthFinish, AuthResponse, AuthResult, AuthStart, Data, Exec, ExitStatus,
-    FileOp, FileRequest, Hello, HelloAck, KeyAuthChallenge, KeyAuthProof, KeyAuthRequest, Message,
-    PtyRequest, RemoteForwardBind, WindowChange,
+    FileEntry, FileOp, FileRequest, Hello, HelloAck, KeyAuthChallenge, KeyAuthProof,
+    KeyAuthRequest, Message, PtyRequest, RemoteForwardBind, WindowChange,
 };
 use std::net::SocketAddr;
 use std::path::Path;
@@ -331,7 +331,10 @@ impl Client {
                     return Ok(ExecOutput { data, exit_code });
                 }
                 Err(rmp_proto::StreamError::Closed) => {
-                    return Ok(ExecOutput { data, exit_code: 0 });
+                    bail!(
+                        "connection closed before the exit status (received {} bytes)",
+                        data.len()
+                    );
                 }
                 Err(e) => return Err(e).context("reading exec output"),
                 Ok(_) => {}
@@ -371,7 +374,10 @@ impl Client {
                     return Ok(ExecOutput { data, exit_code });
                 }
                 Err(rmp_proto::StreamError::Closed) => {
-                    return Ok(ExecOutput { data, exit_code: 0 });
+                    bail!(
+                        "connection closed before the exit status (received {} bytes)",
+                        data.len()
+                    );
                 }
                 Err(e) => return Err(e).context("reading pty output"),
                 Ok(_) => {}
@@ -379,8 +385,86 @@ impl Client {
         }
     }
 
+    /// Create `remote` (and its parents) as a directory.
+    pub async fn mkdir(&self, remote: &str, mode: u32) -> Result<()> {
+        let (mut send, mut recv) = self.conn.open_bi().await.context("opening file stream")?;
+        rmp_proto::write_message(
+            &mut send,
+            &Message::FileRequest(FileRequest {
+                op: FileOp::Mkdir,
+                path: remote.to_string(),
+                mode,
+                size: 0,
+            }),
+        )
+        .await?;
+
+        match rmp_proto::read_message(&mut recv).await? {
+            Message::FileResponse(r) if r.ok => {}
+            Message::FileResponse(r) => {
+                bail!("remote refused mkdir: {}", r.reason.unwrap_or_default())
+            }
+            other => bail!("unexpected response: {:?}", other.frame_type()),
+        }
+        match rmp_proto::read_message(&mut recv).await? {
+            Message::ExitStatus(s) if s.exit_code == 0 => Ok(()),
+            Message::ExitStatus(s) => bail!("remote mkdir failed (exit {})", s.exit_code),
+            other => bail!("unexpected response: {:?}", other.frame_type()),
+        }
+    }
+
+    /// List a remote directory.
+    pub async fn list(&self, remote: &str) -> Result<Vec<FileEntry>> {
+        let (mut send, mut recv) = self.conn.open_bi().await.context("opening file stream")?;
+        rmp_proto::write_message(
+            &mut send,
+            &Message::FileRequest(FileRequest {
+                op: FileOp::List,
+                path: remote.to_string(),
+                mode: 0,
+                size: 0,
+            }),
+        )
+        .await?;
+
+        match rmp_proto::read_message(&mut recv).await? {
+            Message::FileResponse(r) if r.ok => {}
+            Message::FileResponse(r) => {
+                bail!("remote refused listing: {}", r.reason.unwrap_or_default())
+            }
+            other => bail!("unexpected response: {:?}", other.frame_type()),
+        }
+
+        let mut entries = Vec::new();
+        loop {
+            match rmp_proto::read_message(&mut recv).await {
+                Ok(Message::FileEntry(entry)) => entries.push(entry),
+                Ok(Message::Eof) => break,
+                Err(rmp_proto::StreamError::Closed) => {
+                    bail!("connection closed before the directory listing finished")
+                }
+                Ok(_) => {}
+                Err(e) => return Err(e).context("reading directory listing"),
+            }
+        }
+        Ok(entries)
+    }
+
     /// Download `remote` to the local path `local`. Returns bytes written.
     pub async fn download(&self, remote: &str, local: impl AsRef<Path>) -> Result<u64> {
+        self.download_with(remote, local, |_| {}).await
+    }
+
+    /// Like [`Self::download`], calling `progress(total)` after each chunk.
+    pub async fn download_with<F>(
+        &self,
+        remote: &str,
+        local: impl AsRef<Path>,
+        mut progress: F,
+    ) -> Result<u64>
+    where
+        F: FnMut(u64),
+    {
         let (mut send, mut recv) = self.conn.open_bi().await.context("opening file stream")?;
         rmp_proto::write_message(
             &mut send,
@@ -388,12 +472,13 @@ impl Client {
                 op: FileOp::Get,
                 path: remote.to_string(),
                 mode: 0,
+                size: 0,
             }),
         )
         .await?;
 
-        let mode = match rmp_proto::read_message(&mut recv).await? {
-            Message::FileResponse(r) if r.ok => r.mode,
+        let (mode, size) = match rmp_proto::read_message(&mut recv).await? {
+            Message::FileResponse(r) if r.ok => (r.mode, r.size),
             Message::FileResponse(r) => {
                 bail!("remote refused: {}", r.reason.unwrap_or_default())
             }
@@ -404,25 +489,74 @@ impl Client {
             .await
             .with_context(|| format!("creating {}", local.as_ref().display()))?;
         let mut total = 0u64;
+        let mut complete = false;
         loop {
             match rmp_proto::read_message(&mut recv).await {
                 Ok(Message::Data(d)) => {
-                    tokio::io::AsyncWriteExt::write_all(&mut file, &d.data).await?;
+                    if let Err(e) = tokio::io::AsyncWriteExt::write_all(&mut file, &d.data).await {
+                        drop(file);
+                        let _ = tokio::fs::remove_file(local.as_ref()).await;
+                        return Err(e).context("writing download");
+                    }
                     total += d.data.len() as u64;
+                    progress(total);
                 }
-                Ok(Message::Eof) | Err(rmp_proto::StreamError::Closed) => break,
+                Ok(Message::Eof) => {
+                    complete = true;
+                    break;
+                }
+                Err(rmp_proto::StreamError::Closed) => break,
                 Ok(_) => {}
-                Err(e) => return Err(e).context("reading file data"),
+                Err(e) => {
+                    drop(file);
+                    let _ = tokio::fs::remove_file(local.as_ref()).await;
+                    return Err(e).context("reading file data");
+                }
             }
         }
         tokio::io::AsyncWriteExt::flush(&mut file).await?;
         drop(file);
+
+        // A dropped connection is not a successful download: never report a
+        // truncated file as complete.
+        if !complete {
+            let _ = tokio::fs::remove_file(local.as_ref()).await;
+            bail!(
+                "connection closed before the end of {} (received {total} of {size} bytes)",
+                local.as_ref().display()
+            );
+        }
+        if total != size {
+            let _ = tokio::fs::remove_file(local.as_ref()).await;
+            bail!(
+                "incomplete download of {}: received {total} of {size} bytes",
+                local.as_ref().display()
+            );
+        }
         apply_mode(local.as_ref(), mode);
+        progress(total);
         Ok(total)
     }
 
     /// Upload `local` to the remote path `remote`. Returns bytes sent.
     pub async fn upload(&self, local: impl AsRef<Path>, remote: &str) -> Result<u64> {
+        self.upload_with(local, remote, |_| {}).await
+    }
+
+    /// Like [`Self::upload`], calling `progress(total)` after each chunk.
+    pub async fn upload_with<F>(
+        &self,
+        local: impl AsRef<Path>,
+        remote: &str,
+        mut progress: F,
+    ) -> Result<u64>
+    where
+        F: FnMut(u64),
+    {
+        let size = tokio::fs::metadata(local.as_ref())
+            .await
+            .with_context(|| format!("reading metadata for {}", local.as_ref().display()))?
+            .len();
         let (mut send, mut recv) = self.conn.open_bi().await.context("opening file stream")?;
         rmp_proto::write_message(
             &mut send,
@@ -430,6 +564,7 @@ impl Client {
                 op: FileOp::Put,
                 path: remote.to_string(),
                 mode: local_mode(local.as_ref()),
+                size,
             }),
         )
         .await?;
@@ -460,6 +595,7 @@ impl Client {
             )
             .await?;
             total += n as u64;
+            progress(total);
         }
         rmp_proto::write_message(&mut send, &Message::Eof).await?;
 
@@ -468,6 +604,7 @@ impl Client {
             Message::ExitStatus(s) => bail!("remote reported error (exit {})", s.exit_code),
             other => bail!("unexpected response: {:?}", other.frame_type()),
         }
+        progress(total);
         Ok(total)
     }
 
@@ -524,7 +661,9 @@ impl Client {
                             let _ = send.finish();
                             return Ok(exit_code);
                         }
-                        Err(rmp_proto::StreamError::Closed) => return Ok(0),
+                        Err(rmp_proto::StreamError::Closed) => {
+                            bail!("connection closed before the exit status");
+                        }
                         Err(e) => return Err(e).context("interactive session"),
                         Ok(_) => {}
                     }

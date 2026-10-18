@@ -68,6 +68,20 @@ impl KnownHosts {
         self.entries.get(host).copied()
     }
 
+    /// All `(host, fingerprint)` entries, sorted by host.
+    pub fn entries(&self) -> impl Iterator<Item = (&str, Fingerprint)> + '_ {
+        self.entries.iter().map(|(host, fp)| (host.as_str(), *fp))
+    }
+
+    /// Remove `host` and persist the file. Returns whether it existed.
+    pub fn remove(&mut self, host: &str) -> Result<bool, CryptoError> {
+        let removed = self.entries.remove(host).is_some();
+        if removed {
+            self.save()?;
+        }
+        Ok(removed)
+    }
+
     /// Compare a presented fingerprint against the store.
     pub fn check(&self, host: &str, presented: Fingerprint) -> Trust {
         match self.entries.get(host) {
@@ -99,13 +113,62 @@ impl KnownHosts {
             out.push_str(&fp.to_hex());
             out.push('\n');
         }
-        std::fs::write(path, out.as_bytes())?;
+        write_atomic(path, out.as_bytes())?;
         Ok(())
     }
 
     pub fn is_empty(&self) -> bool {
         self.entries.is_empty()
     }
+}
+
+/// Write `contents` to `path` via a private temporary file and a rename.
+///
+/// This avoids leaving a truncated `known_hosts` behind if the process dies
+/// mid-write, and never follows a symlink at the final path.
+fn write_atomic(path: &Path, contents: &[u8]) -> Result<(), CryptoError> {
+    use std::io::Write;
+
+    let parent = path
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+        .unwrap_or_else(|| Path::new("."));
+    std::fs::create_dir_all(parent)?;
+    let name = path
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("known_hosts");
+    let tmp = parent.join(format!(
+        ".{name}.{}.{}.tmp",
+        std::process::id(),
+        rand::random::<u64>()
+    ));
+
+    let result = (|| -> Result<(), CryptoError> {
+        let mut opts = std::fs::OpenOptions::new();
+        opts.write(true).create_new(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            opts.mode(0o600);
+        }
+        let mut file = opts.open(&tmp)?;
+        file.write_all(contents)?;
+        file.sync_all()?;
+        drop(file);
+
+        #[cfg(windows)]
+        {
+            let _ = std::fs::remove_file(path);
+        }
+        std::fs::rename(&tmp, path)?;
+        Ok(())
+    })();
+
+    if result.is_err() {
+        let _ = std::fs::remove_file(&tmp);
+    }
+    result
 }
 
 #[cfg(test)]
@@ -137,7 +200,18 @@ mod tests {
         kh.insert("example:2222", fp);
         kh.save().unwrap();
 
-        let reloaded = KnownHosts::load(&path).unwrap();
+        let mut reloaded = KnownHosts::load(&path).unwrap();
         assert_eq!(reloaded.check("example:2222", fp), Trust::Match);
+        assert_eq!(reloaded.entries().count(), 1);
+        assert!(reloaded.remove("example:2222").unwrap());
+        assert!(!reloaded.remove("example:2222").unwrap());
+        assert!(!path.exists() || KnownHosts::load(&path).unwrap().is_empty());
+
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = std::fs::metadata(&path).unwrap().permissions().mode() & 0o777;
+            assert_eq!(mode, 0o600, "known_hosts must be private");
+        }
     }
 }

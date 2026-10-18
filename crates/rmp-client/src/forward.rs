@@ -145,10 +145,9 @@ pub(crate) async fn pipe(tcp: TcpStream, mut send: SendStream, mut recv: RecvStr
         }
     };
 
-    tokio::select! {
-        _ = stream_to_tcp => {}
-        _ = tcp_to_stream => {}
-    }
+    // Wait for both directions: a half-close (Eof one way) must not cancel
+    // the bytes still flowing in the other direction.
+    tokio::join!(stream_to_tcp, tcp_to_stream);
     let _ = send.finish();
     Ok(())
 }

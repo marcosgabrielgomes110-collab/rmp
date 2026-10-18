@@ -213,12 +213,25 @@ mod tests {
             op: FileOp::Get,
             path: "/etc/hosts".into(),
             mode: 0o644,
+            size: 1234,
         }));
         roundtrip(Message::FileResponse(FileResponse {
             ok: true,
             size: 1234,
             reason: None,
             mode: 0o755,
+        }));
+        roundtrip(Message::FileEntry(FileEntry {
+            name: "file.txt".into(),
+            kind: FileKind::File,
+            size: 42,
+            mode: 0o644,
+        }));
+        roundtrip(Message::FileRequest(FileRequest {
+            op: FileOp::List,
+            path: "/tmp".into(),
+            mode: 0,
+            size: 0,
         }));
     }
 
@@ -290,6 +303,31 @@ mod tests {
             public_key: vec![],
         })
         .is_control());
+    }
+
+    #[test]
+    fn arbitrary_bytes_never_panic() {
+        let mut state = 0x1234_5678_9abc_def0u64;
+        for len in 0..512 {
+            let mut buf = Vec::with_capacity(len);
+            for _ in 0..len {
+                state = state
+                    .wrapping_mul(6_364_136_223_846_793_005)
+                    .wrapping_add(1_442_695_040_888_963_407);
+                buf.push((state >> 33) as u8);
+            }
+            let _ = decode(&buf);
+            let _ = parse_header(&buf);
+
+            // Also exercise a plausible header with random type/payload bytes.
+            let mut framed = Vec::with_capacity(8 + len);
+            framed.extend_from_slice(&MAGIC.to_be_bytes());
+            framed.push(WIRE_VERSION);
+            framed.push((state >> 24) as u8);
+            framed.extend_from_slice(&(len as u32).to_be_bytes());
+            framed.extend_from_slice(&buf);
+            let _ = decode(&framed);
+        }
     }
 
     #[test]

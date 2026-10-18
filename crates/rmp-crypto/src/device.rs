@@ -12,6 +12,7 @@ use crate::hostkey::{write_private, Fingerprint};
 use ed25519_dalek::{Signature, Signer, SigningKey, Verifier, VerifyingKey};
 use rand::rngs::OsRng;
 use std::path::Path;
+use zeroize::{Zeroize, Zeroizing};
 
 /// Length of an Ed25519 public key / seed.
 pub const PUBLIC_KEY_LEN: usize = 32;
@@ -67,7 +68,10 @@ impl DeviceKey {
             // Best effort: restrict the containing directory to the owner.
             let _ = rmp_dirs::restrict_to_owner(parent);
         }
-        write_private(path, hex::encode(self.seed()).as_bytes())
+        let mut seed = self.seed();
+        let encoded = Zeroizing::new(hex::encode(seed));
+        seed.zeroize();
+        write_private(path, encoded.as_bytes())
     }
 
     /// Load a seed previously saved with [`DeviceKey::save`].

@@ -1,23 +1,29 @@
 //! Session channel handling: non-interactive `Exec` and interactive PTY.
 
+use crate::server::SpawnSpec;
 use anyhow::{Context, Result};
 use quinn::{RecvStream, SendStream};
 use rmp_proto::{Data, ExitStatus, Message, PtyRequest};
+use std::time::Duration;
 use tokio::io::AsyncReadExt;
 
 /// Run a command through the shell, streaming stdout+stderr back as `Data`.
 ///
-/// Returns the exit code. `program`/`args` select the shell (or a privilege
-/// dropping wrapper such as `runuser`).
-pub async fn run_exec(
+/// Returns the exit code. The [`SpawnSpec`] selects the shell (or a privilege
+/// dropping wrapper such as `runuser`) plus its environment and working
+/// directory.
+pub(crate) async fn run_exec(
     send: &mut SendStream,
     _recv: &mut RecvStream,
     command: &str,
-    program: &str,
-    args: &[String],
+    spec: &SpawnSpec,
 ) -> Result<u32> {
-    let mut command_builder = tokio::process::Command::new(program);
-    command_builder.args(args);
+    let mut command_builder = tokio::process::Command::new(&spec.program);
+    command_builder.args(&spec.args);
+    if let Some(cwd) = &spec.cwd {
+        command_builder.current_dir(cwd);
+    }
+    command_builder.envs(spec.env.iter().map(|(k, v)| (k, v)));
     // `cmd.exe` uses `/C`; POSIX shells use `-c`.
     #[cfg(windows)]
     command_builder.arg("/C");
@@ -30,12 +36,14 @@ pub async fn run_exec(
         .stderr(std::process::Stdio::piped())
         .kill_on_drop(true)
         .spawn()
-        .with_context(|| format!("spawning {program}"))?;
+        .with_context(|| format!("spawning {}", spec.program))?;
 
     let mut stdout = child.stdout.take().expect("stdout piped");
     let mut stderr = child.stderr.take().expect("stderr piped");
 
-    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<Vec<u8>>();
+    // Bounded so a fast producer (e.g. `yes`) cannot buffer the whole output
+    // in memory while the QUIC stream applies backpressure.
+    let (tx, mut rx) = tokio::sync::mpsc::channel::<Vec<u8>>(64);
     let tx_out = tx.clone();
     let out_task = tokio::spawn(async move { pump(&mut stdout, tx_out).await });
     let tx_err = tx.clone();
@@ -75,7 +83,7 @@ pub async fn run_exec(
     Ok(code)
 }
 
-async fn pump<R>(reader: &mut R, tx: tokio::sync::mpsc::UnboundedSender<Vec<u8>>)
+async fn pump<R>(reader: &mut R, tx: tokio::sync::mpsc::Sender<Vec<u8>>)
 where
     R: tokio::io::AsyncRead + Unpin,
 {
@@ -84,7 +92,7 @@ where
         match reader.read(&mut buf).await {
             Ok(0) => break,
             Ok(n) => {
-                if tx.send(buf[..n].to_vec()).is_err() {
+                if tx.send(buf[..n].to_vec()).await.is_err() {
                     break;
                 }
             }
@@ -96,12 +104,11 @@ where
 /// Run an interactive PTY session bridged with the QUIC stream.
 ///
 /// Returns the exit code of the shell.
-pub async fn run_pty(
+pub(crate) async fn run_pty(
     send: &mut SendStream,
     recv: &mut RecvStream,
     req: PtyRequest,
-    program: &str,
-    args: &[String],
+    spec: &SpawnSpec,
     motd: Option<&str>,
 ) -> Result<u32> {
     use portable_pty::{native_pty_system, CommandBuilder, PtySize};
@@ -130,9 +137,15 @@ pub async fn run_pty(
         })
         .context("opening a PTY")?;
 
-    let mut cmd = CommandBuilder::new(program);
-    if !args.is_empty() {
-        cmd.args(args);
+    let mut cmd = CommandBuilder::new(&spec.program);
+    if !spec.args.is_empty() {
+        cmd.args(spec.args.iter());
+    }
+    if let Some(cwd) = &spec.cwd {
+        cmd.cwd(cwd);
+    }
+    for (key, value) in &spec.env {
+        cmd.env(key, value);
     }
     cmd.env(
         "TERM",
@@ -150,15 +163,16 @@ pub async fn run_pty(
     let mut reader = master.try_clone_reader().context("pty reader")?;
     let mut writer = master.take_writer().context("pty writer")?;
 
-    // PTY -> network.
-    let (out_tx, mut out_rx) = tokio::sync::mpsc::unbounded_channel::<Vec<u8>>();
+    // PTY -> network. Bounded so a chatty program cannot grow memory faster
+    // than the QUIC stream drains.
+    let (out_tx, mut out_rx) = tokio::sync::mpsc::channel::<Vec<u8>>(64);
     std::thread::spawn(move || {
         let mut buf = [0u8; 16 * 1024];
         loop {
             match reader.read(&mut buf) {
                 Ok(0) => break,
                 Ok(n) => {
-                    if out_tx.send(buf[..n].to_vec()).is_err() {
+                    if out_tx.blocking_send(buf[..n].to_vec()).is_err() {
                         break;
                     }
                 }
@@ -167,10 +181,10 @@ pub async fn run_pty(
         }
     });
 
-    // network -> PTY.
-    let (in_tx, in_rx) = std::sync::mpsc::channel::<Vec<u8>>();
+    // network -> PTY. Also bounded, for the same reason.
+    let (in_tx, mut in_rx) = tokio::sync::mpsc::channel::<Vec<u8>>(64);
     std::thread::spawn(move || {
-        while let Ok(chunk) = in_rx.recv() {
+        while let Some(chunk) = in_rx.blocking_recv() {
             if writer.write_all(&chunk).is_err() {
                 break;
             }
@@ -193,7 +207,11 @@ pub async fn run_pty(
             }
             msg = rmp_proto::read_message(recv) => {
                 match msg {
-                    Ok(Message::Data(d)) => { let _ = in_tx.send(d.data); }
+                    Ok(Message::Data(d)) => {
+                        if in_tx.send(d.data).await.is_err() {
+                            break;
+                        }
+                    }
                     Ok(Message::WindowChange(w)) => {
                         let _ = master.resize(PtySize {
                             rows: w.rows,
@@ -204,10 +222,13 @@ pub async fn run_pty(
                     }
                     Ok(Message::Signal(s)) => {
                         if let Some(byte) = signal_byte(&s.signal) {
-                            let _ = in_tx.send(vec![byte]);
+                            let _ = in_tx.send(vec![byte]).await;
                         }
                     }
-                    Ok(Message::Eof) => { /* stdin closed */ }
+                    // Local stdin reached EOF: deliver Ctrl-D to the shell.
+                    Ok(Message::Eof) => {
+                        let _ = in_tx.send(vec![0x04]).await;
+                    }
                     Ok(Message::Shell) => { /* shell already spawned */ }
                     Ok(_) => {}
                     Err(rmp_proto::StreamError::Closed) => break,
@@ -215,9 +236,25 @@ pub async fn run_pty(
                 }
             }
             Some(code) = status_rx.recv() => {
-                // Flush remaining output before reporting the exit code.
-                while let Ok(chunk) = out_rx.try_recv() {
-                    rmp_proto::write_message(send, &Message::Data(Data { data: chunk })).await?;
+                // The child exited, but the reader thread may still be
+                // delivering the last bytes. Drain until EOF, with a short
+                // bound so a background process holding the PTY cannot hang
+                // the session.
+                let deadline = tokio::time::sleep(Duration::from_millis(500));
+                tokio::pin!(deadline);
+                loop {
+                    tokio::select! {
+                        chunk = out_rx.recv() => match chunk {
+                            Some(chunk) => {
+                                rmp_proto::write_message(
+                                    send,
+                                    &Message::Data(Data { data: chunk }),
+                                ).await?;
+                            }
+                            None => break,
+                        },
+                        _ = &mut deadline => break,
+                    }
                 }
                 rmp_proto::write_message(send, &Message::ExitStatus(ExitStatus {
                     exit_code: code,

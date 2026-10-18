@@ -33,17 +33,27 @@ pub struct Authed {
     pub principal: Principal,
 }
 
-/// In-memory, per-IP failed-authentication tracker with temporary lockout.
+/// Upper bound on tracked principals/IPs, to keep a username-spraying attacker
+/// from growing the limiter without limit.
+const MAX_TRACKED: usize = 4096;
+
+/// In-memory failed-authentication tracker with temporary lockout.
+///
+/// Attempts are tracked per `(network, username)` and, with a higher threshold,
+/// per network. IPv6 addresses are grouped by `/64` so rotating the host bits
+/// does not bypass the limit.
 #[derive(Debug)]
 pub struct AuthLimiter {
     max_attempts: u32,
     lockout: Duration,
-    inner: Mutex<HashMap<IpAddr, Entry>>,
+    principals: Mutex<HashMap<(IpAddr, String), Entry>>,
+    networks: Mutex<HashMap<IpAddr, Entry>>,
 }
 
 #[derive(Debug, Default)]
 struct Entry {
     failures: u32,
+    last_failure: Option<Instant>,
     locked_until: Option<Instant>,
 }
 
@@ -52,41 +62,133 @@ impl AuthLimiter {
         AuthLimiter {
             max_attempts,
             lockout,
-            inner: Mutex::new(HashMap::new()),
+            principals: Mutex::new(HashMap::new()),
+            networks: Mutex::new(HashMap::new()),
         }
     }
 
-    /// Whether `ip` is currently locked out.
-    pub fn is_locked(&self, ip: IpAddr) -> bool {
-        let mut map = self.inner.lock().expect("limiter mutex poisoned");
-        match map.get_mut(&ip) {
-            Some(entry) => match entry.locked_until {
-                Some(until) if until > Instant::now() => true,
+    /// Whether `user` from `ip` is currently locked out.
+    pub fn is_locked(&self, ip: IpAddr, user: &str) -> bool {
+        let now = Instant::now();
+        let key_ip = network_key(ip);
+
+        let mut principals = self.principals.lock().expect("limiter mutex poisoned");
+        let key = (key_ip, user.to_string());
+        if let Some(entry) = principals.get_mut(&key) {
+            match entry.locked_until {
+                Some(until) if until > now => return true,
+                // Expired lockout: drop the entry and start over.
                 Some(_) => {
-                    map.remove(&ip);
-                    false
+                    principals.remove(&key);
                 }
-                None => false,
-            },
-            None => false,
+                // Still accumulating failures; keep the count.
+                None => {}
+            }
+        }
+
+        let mut networks = self.networks.lock().expect("limiter mutex poisoned");
+        if let Some(entry) = networks.get_mut(&key_ip) {
+            match entry.locked_until {
+                Some(until) if until > now => return true,
+                Some(_) => {
+                    networks.remove(&key_ip);
+                }
+                None => {}
+            }
+        }
+        false
+    }
+
+    fn record_failure(&self, ip: IpAddr, user: &str) {
+        if self.max_attempts == 0 {
+            return;
+        }
+
+        let key_ip = network_key(ip);
+        let now = Instant::now();
+        let key = (key_ip, user.to_string());
+
+        {
+            let mut map = self.principals.lock().expect("limiter mutex poisoned");
+            if !map.contains_key(&key) && map.len() >= MAX_TRACKED {
+                prune(&mut map, now, self.lockout);
+            }
+            if map.len() < MAX_TRACKED || map.contains_key(&key) {
+                record(
+                    map.entry(key).or_default(),
+                    now,
+                    self.max_attempts,
+                    self.lockout,
+                );
+            }
+        }
+
+        // A higher aggregate threshold avoids one user's failures locking every
+        // other user behind the same NAT, while still bounding spraying.
+        {
+            let mut map = self.networks.lock().expect("limiter mutex poisoned");
+            if !map.contains_key(&key_ip) && map.len() >= MAX_TRACKED {
+                prune(&mut map, now, self.lockout);
+            }
+            if map.len() < MAX_TRACKED || map.contains_key(&key_ip) {
+                let threshold = self.max_attempts.saturating_mul(4);
+                record(map.entry(key_ip).or_default(), now, threshold, self.lockout);
+            }
         }
     }
 
-    fn record_failure(&self, ip: IpAddr) {
-        let mut map = self.inner.lock().expect("limiter mutex poisoned");
-        let entry = map.entry(ip).or_default();
-        entry.failures = entry.failures.saturating_add(1);
-        if self.max_attempts != 0 && entry.failures >= self.max_attempts {
-            entry.locked_until = Some(Instant::now() + self.lockout);
-        }
-    }
-
-    fn record_success(&self, ip: IpAddr) {
-        self.inner
+    fn record_success(&self, ip: IpAddr, user: &str) {
+        let key_ip = network_key(ip);
+        self.principals
             .lock()
             .expect("limiter mutex poisoned")
-            .remove(&ip);
+            .remove(&(key_ip, user.to_string()));
+        // A successful login clears the aggregate too, so collateral lockouts
+        // from a shared NAT do not persist.
+        self.networks
+            .lock()
+            .expect("limiter mutex poisoned")
+            .remove(&key_ip);
     }
+}
+
+/// Group IPv6 addresses by `/64`; keep IPv4 addresses as-is.
+fn network_key(ip: IpAddr) -> IpAddr {
+    match ip {
+        IpAddr::V6(v6) => {
+            let segments = v6.segments();
+            IpAddr::V6(std::net::Ipv6Addr::new(
+                segments[0],
+                segments[1],
+                segments[2],
+                segments[3],
+                0,
+                0,
+                0,
+                0,
+            ))
+        }
+        IpAddr::V4(_) => ip,
+    }
+}
+
+fn record(entry: &mut Entry, now: Instant, threshold: u32, lockout: Duration) {
+    entry.failures = entry.failures.saturating_add(1);
+    entry.last_failure = Some(now);
+    if threshold != 0 && entry.failures >= threshold {
+        entry.locked_until = Some(now + lockout);
+    }
+}
+
+fn prune<K>(map: &mut HashMap<K, Entry>, now: Instant, window: Duration) {
+    map.retain(|_, entry| {
+        if entry.locked_until.is_some_and(|until| until > now) {
+            return true;
+        }
+        entry
+            .last_failure
+            .is_some_and(|last| now.duration_since(last) < window)
+    });
 }
 
 /// Run the authentication exchange.
@@ -102,13 +204,6 @@ pub async fn authenticate(
 ) -> Result<Option<Authed>> {
     let ip = peer.ip();
 
-    if limiter.is_locked(ip) {
-        tracing::warn!(%peer, "authentication attempt while locked out");
-        audit!(event = "auth.locked_out", peer = %peer);
-        write_result(send, false, AuthReason::LockedOut, false).await?;
-        return Ok(None);
-    }
-
     let first = match rmp_proto::read_message(recv).await {
         Ok(msg) => msg,
         Err(_) => {
@@ -116,6 +211,19 @@ pub async fn authenticate(
             return Ok(None);
         }
     };
+
+    let username = match &first {
+        Message::AuthStart(start) => start.username.clone(),
+        Message::KeyAuthRequest(req) => req.username.clone(),
+        other => anyhow::bail!("unexpected first auth message: {:?}", other.frame_type()),
+    };
+
+    if limiter.is_locked(ip, &username) {
+        tracing::warn!(%peer, user = %username, "authentication attempt while locked out");
+        audit!(event = "auth.locked_out", peer = %peer, user = %username);
+        write_result(send, false, AuthReason::LockedOut, false).await?;
+        return Ok(None);
+    }
 
     match first {
         Message::AuthStart(start) => {
@@ -143,15 +251,21 @@ async fn authenticate_password(
     // - the configured user → its password file (unless password auth is off);
     // - `root` → the root password file (only when allow_root is enabled);
     // - anything else → no file: OPAQUE still answers indistinguishably.
-    let (file, principal) = if username == opts.username {
+    // `root` is checked first and never shares the normal account's password
+    // file, even if a misconfiguration made `server.username = "root"`.
+    let (file, principal) = if username == "root" {
+        if opts.allow_root {
+            (opts.root_password_file.as_ref(), Principal::Root)
+        } else {
+            (None, Principal::User)
+        }
+    } else if username == opts.username {
         let file = if opts.password_enabled {
             Some(&opts.password_file)
         } else {
             None
         };
         (file, Principal::User)
-    } else if username == "root" && opts.allow_root {
-        (opts.root_password_file.as_ref(), Principal::Root)
     } else {
         (None, Principal::User)
     };
@@ -167,7 +281,7 @@ async fn authenticate_password(
     let finish = match rmp_proto::read_message(recv).await {
         Ok(msg) => msg,
         Err(_) => {
-            limiter.record_failure(ip);
+            limiter.record_failure(ip, &username);
             audit!(event = "auth.failure", peer = %peer, user = %username, method = "password", reason = "aborted");
             return Ok(None);
         }
@@ -178,7 +292,7 @@ async fn authenticate_password(
             device_pubkey,
         }) => (payload, device_pubkey),
         other => {
-            limiter.record_failure(ip);
+            limiter.record_failure(ip, &username);
             audit!(event = "auth.failure", peer = %peer, user = %username, method = "password",
                    reason = "unexpected_message", got = %format!("{:?}", other.frame_type()));
             write_result(send, false, AuthReason::InvalidCredentials, false).await?;
@@ -188,7 +302,7 @@ async fn authenticate_password(
 
     match crypto::password::server_finish(&state, &payload) {
         Ok(_session_key) => {
-            limiter.record_success(ip);
+            limiter.record_success(ip, &username);
 
             // Optional device-key enrollment on a successful password login.
             let mut key_enrolled = false;
@@ -206,7 +320,7 @@ async fn authenticate_password(
         }
         Err(e) => {
             tracing::warn!(%peer, user = %username, error = %e, "password authentication failed");
-            limiter.record_failure(ip);
+            limiter.record_failure(ip, &username);
             let reason = lockout_reason(limiter, ip, peer, &username);
             write_result(send, false, reason, false).await?;
             Ok(None)
@@ -229,8 +343,10 @@ async fn authenticate_key(
     } = req;
     audit!(event = "auth.attempt", peer = %peer, user = %username, method = "key");
 
-    if !opts.allow_key_auth || public_key.len() != 32 {
-        limiter.record_failure(ip);
+    // Device keys are only supported for the normal account. Root always
+    // requires its separate password.
+    if username == "root" || !opts.allow_key_auth || public_key.len() != 32 {
+        limiter.record_failure(ip, &username);
         audit!(event = "auth.failure", peer = %peer, user = %username, method = "key", reason = "disabled_or_bad_key");
         write_result(send, false, AuthReason::InvalidCredentials, false).await?;
         return Ok(None);
@@ -251,7 +367,7 @@ async fn authenticate_key(
     let proof = match rmp_proto::read_message(recv).await {
         Ok(Message::KeyAuthProof(KeyAuthProof { signature })) => signature,
         _ => {
-            limiter.record_failure(ip);
+            limiter.record_failure(ip, &username);
             audit!(event = "auth.failure", peer = %peer, user = %username, method = "key", reason = "aborted");
             return Ok(None);
         }
@@ -270,7 +386,7 @@ async fn authenticate_key(
     let signature_ok = verify_device_signature(&public_key, &context, &proof);
 
     if key_ok && signature_ok {
-        limiter.record_success(ip);
+        limiter.record_success(ip, &username);
         audit!(event = "auth.success", peer = %peer, user = %username, method = "key");
         write_result(send, true, AuthReason::Ok, false).await?;
         Ok(Some(Authed {
@@ -278,7 +394,7 @@ async fn authenticate_key(
             principal: Principal::User,
         }))
     } else {
-        limiter.record_failure(ip);
+        limiter.record_failure(ip, &username);
         let reason = lockout_reason(limiter, ip, peer, &username);
         audit!(event = "auth.failure", peer = %peer, user = %username, method = "key",
                reason = if !key_ok { "unknown_key" } else { "bad_signature" });
@@ -296,7 +412,9 @@ fn enroll(
     public_key: &[u8],
     peer: SocketAddr,
 ) -> bool {
-    if !opts.allow_key_enrollment || public_key.len() != 32 {
+    // Root cannot authenticate with a device key, so enrolling one would only
+    // create a useless entry.
+    if principal == Principal::Root || !opts.allow_key_enrollment || public_key.len() != 32 {
         audit!(event = "key.enroll_rejected", peer = %peer, user = %username);
         return false;
     }
@@ -328,7 +446,7 @@ fn lockout_reason(
     peer: SocketAddr,
     username: &str,
 ) -> AuthReason {
-    if limiter.is_locked(ip) {
+    if limiter.is_locked(ip, username) {
         audit!(event = "auth.lockout", peer = %peer, user = %username);
         AuthReason::LockedOut
     } else {
@@ -368,30 +486,59 @@ mod tests {
     fn locks_out_after_max_attempts() {
         let limiter = AuthLimiter::new(3, Duration::from_secs(60));
         let addr = ip(1);
-        limiter.record_failure(addr);
-        limiter.record_failure(addr);
-        assert!(!limiter.is_locked(addr));
-        limiter.record_failure(addr);
-        assert!(limiter.is_locked(addr));
+        limiter.record_failure(addr, "alice");
+        limiter.record_failure(addr, "alice");
+        assert!(!limiter.is_locked(addr, "alice"));
+        limiter.record_failure(addr, "alice");
+        assert!(limiter.is_locked(addr, "alice"));
     }
 
     #[test]
     fn success_resets_failures() {
         let limiter = AuthLimiter::new(3, Duration::from_secs(60));
         let addr = ip(2);
-        limiter.record_failure(addr);
-        limiter.record_failure(addr);
-        limiter.record_success(addr);
-        limiter.record_failure(addr);
-        limiter.record_failure(addr);
-        assert!(!limiter.is_locked(addr));
+        limiter.record_failure(addr, "alice");
+        limiter.record_failure(addr, "alice");
+        limiter.record_success(addr, "alice");
+        limiter.record_failure(addr, "alice");
+        limiter.record_failure(addr, "alice");
+        assert!(!limiter.is_locked(addr, "alice"));
     }
 
     #[test]
     fn expired_lockout_is_cleared() {
         let limiter = AuthLimiter::new(1, Duration::from_millis(0));
         let addr = ip(3);
-        limiter.record_failure(addr);
-        assert!(!limiter.is_locked(addr));
+        limiter.record_failure(addr, "alice");
+        assert!(!limiter.is_locked(addr, "alice"));
+    }
+
+    #[test]
+    fn users_are_limited_independently() {
+        let limiter = AuthLimiter::new(3, Duration::from_secs(60));
+        let addr = ip(4);
+        for _ in 0..3 {
+            limiter.record_failure(addr, "alice");
+        }
+        assert!(limiter.is_locked(addr, "alice"));
+        assert!(
+            !limiter.is_locked(addr, "bob"),
+            "one user's failures must not lock another user behind the same IP"
+        );
+    }
+
+    #[test]
+    fn ipv6_is_grouped_by_64() {
+        let limiter = AuthLimiter::new(1, Duration::from_secs(60));
+        let a: IpAddr = "2001:db8:1:2::1".parse().unwrap();
+        let b: IpAddr = "2001:db8:1:2::9999".parse().unwrap();
+        let other: IpAddr = "2001:db8:1:3::1".parse().unwrap();
+
+        limiter.record_failure(a, "alice");
+        assert!(
+            limiter.is_locked(b, "alice"),
+            "same /64 must share the limit"
+        );
+        assert!(!limiter.is_locked(other, "alice"));
     }
 }

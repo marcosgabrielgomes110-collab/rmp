@@ -47,7 +47,10 @@ pub const PROTOCOL_NAME: &str = "RMP — Remote Machine Protocol";
 pub const WIRE_VERSION: u8 = 2;
 
 /// Current application protocol version negotiated in `Hello`/`HelloAck`.
-pub const PROTO_VERSION: u16 = 3;
+///
+/// Version 4 adds the expected size to `FileRequest` (upload verification).
+/// Version 5 adds directory listing (`FileEntry`) and `Mkdir`/`List` ops.
+pub const PROTO_VERSION: u16 = 5;
 
 /// Domain-separation prefix for device-key authentication signatures.
 pub const KEY_AUTH_CONTEXT: &[u8] = b"rmp-keyauth-v1";

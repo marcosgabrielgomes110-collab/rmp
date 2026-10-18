@@ -17,7 +17,7 @@ struct Harness {
 }
 
 async fn start_server() -> Harness {
-    start_server_with(true, true, false, true).await
+    start_server_with(true, true, false, true, 128).await
 }
 
 async fn start_server_with(
@@ -25,6 +25,7 @@ async fn start_server_with(
     allow_key_enrollment: bool,
     allow_remote_forward: bool,
     allow_file_transfer: bool,
+    max_connections: usize,
 ) -> Harness {
     let host_key = crypto::HostKey::generate().unwrap();
     let fingerprint = host_key.fingerprint();
@@ -47,6 +48,7 @@ async fn start_server_with(
     opts.allow_key_enrollment = allow_key_enrollment;
     opts.allow_remote_forward = allow_remote_forward;
     opts.allow_file_transfer = allow_file_transfer;
+    opts.max_connections = max_connections;
     opts.authorized_keys_path = authorized_keys.clone();
 
     let endpoint = bind("127.0.0.1:0".parse().unwrap(), &opts).unwrap();
@@ -238,7 +240,7 @@ async fn unknown_device_key_is_rejected() {
 
 #[tokio::test]
 async fn enrollment_disabled_does_not_store_key() {
-    let h = start_server_with(true, false, false, true).await;
+    let h = start_server_with(true, false, false, true, 128).await;
     let opts = client_opts(&h, Some(h.fingerprint));
 
     let device = rmp_client::DeviceKey::generate();
@@ -261,7 +263,7 @@ async fn enrollment_disabled_does_not_store_key() {
 
 #[tokio::test]
 async fn key_auth_disabled_rejects_key() {
-    let h = start_server_with(false, true, false, true).await;
+    let h = start_server_with(false, true, false, true, 128).await;
     let opts = client_opts(&h, Some(h.fingerprint));
     let device = rmp_client::DeviceKey::generate();
 
@@ -337,7 +339,7 @@ async fn remote_port_forward_roundtrip() {
     use tokio::net::{TcpListener, TcpStream};
 
     // Server that allows -R.
-    let h = start_server_with(true, true, true, true).await;
+    let h = start_server_with(true, true, true, true, 128).await;
     let opts = client_opts(&h, Some(h.fingerprint));
     let mut client = Client::connect(&opts, USER, PASSWORD.as_bytes())
         .await
@@ -427,17 +429,32 @@ async fn file_transfer_roundtrip() {
     let remote = dir.path().join("uploaded.txt");
     let remote_str = remote.to_str().unwrap();
 
-    let sent = client.upload(&local_src, remote_str).await.expect("upload");
+    let mut uploaded = 0u64;
+    let sent = client
+        .upload_with(&local_src, remote_str, |done| uploaded = done)
+        .await
+        .expect("upload");
     assert_eq!(sent as usize, payload.len());
+    assert_eq!(
+        uploaded as usize,
+        payload.len(),
+        "progress reports final size"
+    );
     assert_eq!(std::fs::read(&remote).unwrap(), payload);
 
     // Download it back to a different local file.
     let local_out = dir.path().join("downloaded.txt");
+    let mut downloaded = 0u64;
     let got = client
-        .download(remote_str, &local_out)
+        .download_with(remote_str, &local_out, |done| downloaded = done)
         .await
         .expect("download");
     assert_eq!(got as usize, payload.len());
+    assert_eq!(
+        downloaded as usize,
+        payload.len(),
+        "progress reports final size"
+    );
     assert_eq!(std::fs::read(&local_out).unwrap(), payload);
 
     // The executable bit is preserved in both directions (Unix).
@@ -469,7 +486,7 @@ async fn download_missing_file_is_refused() {
 #[tokio::test]
 async fn file_transfer_disabled_is_refused() {
     // allow_file_transfer = false
-    let h = start_server_with(true, true, false, false).await;
+    let h = start_server_with(true, true, false, false, 128).await;
     let opts = client_opts(&h, Some(h.fingerprint));
     let client = Client::connect(&opts, USER, PASSWORD.as_bytes())
         .await
@@ -481,4 +498,53 @@ async fn file_transfer_disabled_is_refused() {
     let remote = dir.path().join("y.txt");
     let res = client.upload(&local, remote.to_str().unwrap()).await;
     assert!(res.is_err(), "file transfer must be refused when disabled");
+}
+
+#[tokio::test]
+async fn max_connections_is_enforced() {
+    let h = start_server_with(true, true, false, true, 1).await;
+    let opts = client_opts(&h, Some(h.fingerprint));
+
+    let first = Client::connect(&opts, USER, PASSWORD.as_bytes())
+        .await
+        .expect("first connection");
+
+    let second = tokio::time::timeout(Duration::from_secs(5), rmp_client::transport(&opts))
+        .await
+        .expect("second attempt must not hang");
+
+    assert!(
+        second.is_err(),
+        "a second connection must be refused when max_connections = 1"
+    );
+
+    drop(first);
+}
+
+#[tokio::test]
+async fn remote_forward_listener_is_released_on_disconnect() {
+    let h = start_server_with(true, true, true, true, 128).await;
+    let opts = client_opts(&h, Some(h.fingerprint));
+    let mut client = Client::connect(&opts, USER, PASSWORD.as_bytes())
+        .await
+        .unwrap();
+
+    let bound = client
+        .request_remote_forward(0, "127.0.0.1", 9)
+        .await
+        .expect("remote forward bound");
+
+    drop(client);
+
+    // The listener must be closed when the QUIC connection goes away.
+    for _ in 0..50 {
+        if tokio::net::TcpListener::bind(("127.0.0.1", bound))
+            .await
+            .is_ok()
+        {
+            return;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    panic!("port {bound} was not released after the client disconnected");
 }

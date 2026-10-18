@@ -7,19 +7,20 @@
 
 use crate::audit::audit;
 use anyhow::Result;
-use quinn::{RecvStream, SendStream};
 use rmp_proto::{Data, ForwardRequest, ForwardResponse, Message};
 use std::net::SocketAddr;
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::net::TcpStream;
 
 /// Dial the requested target and pipe it with the forwarding stream.
-pub async fn serve(
-    mut send: SendStream,
-    recv: RecvStream,
-    req: ForwardRequest,
-    peer: SocketAddr,
-) -> Result<()> {
+///
+/// The I/O is generic so the same implementation can run over a QUIC stream
+/// (server) or over the helper process's stdin/stdout (root mode).
+pub async fn serve<S, R>(mut send: S, recv: R, req: ForwardRequest, peer: SocketAddr) -> Result<()>
+where
+    S: AsyncWrite + Unpin + Send,
+    R: AsyncRead + Unpin + Send,
+{
     let target = format!("{}:{}", req.host, req.port);
     audit!(event = "forward.open", peer = %peer, target = %target);
 
@@ -51,10 +52,14 @@ pub async fn serve(
     Ok(())
 }
 
-/// Pipe a TCP connection and a framed QUIC stream in both directions.
+/// Pipe a TCP connection and a framed stream in both directions.
 ///
-/// Ends when either direction closes.
-pub async fn pipe(tcp: TcpStream, mut send: SendStream, mut recv: RecvStream) -> Result<()> {
+/// Ends when both directions close.
+pub async fn pipe<S, R>(tcp: TcpStream, mut send: S, mut recv: R) -> Result<()>
+where
+    S: AsyncWrite + Unpin + Send,
+    R: AsyncRead + Unpin + Send,
+{
     let (mut tcp_read, mut tcp_write) = tcp.into_split();
 
     let stream_to_tcp = async {
@@ -101,10 +106,9 @@ pub async fn pipe(tcp: TcpStream, mut send: SendStream, mut recv: RecvStream) ->
         }
     };
 
-    tokio::select! {
-        _ = stream_to_tcp => {}
-        _ = tcp_to_stream => {}
-    }
-    let _ = send.finish();
+    // Wait for both directions: a half-close (Eof one way) must not cancel
+    // the bytes still flowing in the other direction.
+    tokio::join!(stream_to_tcp, tcp_to_stream);
+    let _ = send.shutdown().await;
     Ok(())
 }

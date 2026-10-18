@@ -24,6 +24,7 @@ use opaque_ke::{
 use rand::rngs::OsRng;
 use sha2::Sha512;
 use std::path::Path;
+use zeroize::Zeroize;
 
 /// The OPAQUE parameter set used by RMP.
 ///
@@ -44,6 +45,12 @@ pub type Setup = ServerSetup<RmpCipherSuite>;
 /// A serialized server-side registration record for one user.
 #[derive(Clone)]
 pub struct PasswordFile(Vec<u8>);
+
+impl Drop for PasswordFile {
+    fn drop(&mut self) {
+        self.0.zeroize();
+    }
+}
 
 impl PasswordFile {
     pub fn as_bytes(&self) -> &[u8] {
@@ -110,8 +117,20 @@ pub fn enroll(password: &[u8], username: &str, setup: &Setup) -> Result<Password
 /// Opaque client state carried between [`client_start`] and [`client_finish`].
 pub struct ClientLoginState(Vec<u8>);
 
+impl Drop for ClientLoginState {
+    fn drop(&mut self) {
+        self.0.zeroize();
+    }
+}
+
 /// Opaque server state carried between [`server_start`] and [`server_finish`].
 pub struct ServerLoginState(Vec<u8>);
+
+impl Drop for ServerLoginState {
+    fn drop(&mut self) {
+        self.0.zeroize();
+    }
+}
 
 /// Client step 1: produce a credential request.
 pub fn client_start(password: &[u8]) -> Result<(Vec<u8>, ClientLoginState), CryptoError> {

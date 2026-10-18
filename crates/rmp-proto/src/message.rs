@@ -78,6 +78,7 @@ pub enum FrameType {
     // File transfer (0x6_)
     FileRequest = 0x60,
     FileResponse = 0x61,
+    FileEntry = 0x62,
 }
 
 impl FrameType {
@@ -122,6 +123,7 @@ impl FrameType {
             0x51 => ForwardResponse,
             0x60 => FileRequest,
             0x61 => FileResponse,
+            0x62 => FileEntry,
             other => return Err(ProtoError::UnknownType(other)),
         })
     }
@@ -423,6 +425,10 @@ pub enum FileOp {
     Get = 0,
     /// Upload a file to the server.
     Put = 1,
+    /// Create a directory (recursively).
+    Mkdir = 2,
+    /// List a directory.
+    List = 3,
 }
 
 /// Start a file transfer on a dedicated stream.
@@ -432,6 +438,10 @@ pub struct FileRequest {
     pub path: String,
     /// Unix mode to apply on `Put` (0 = server default). Ignored for `Get`.
     pub mode: u32,
+    /// Expected number of bytes on `Put` (0 means an empty file). The server
+    /// rejects the upload if the received total does not match. Ignored for
+    /// `Get`.
+    pub size: u64,
 }
 
 /// Response to [`FileRequest`] (initial ack); `size` is the file size for `Get`.
@@ -441,6 +451,25 @@ pub struct FileResponse {
     pub size: u64,
     pub reason: Option<String>,
     /// Unix mode of the source file on `Get` (0 = unknown). Ignored for `Put`.
+    pub mode: u32,
+}
+
+/// Type of an entry returned by a directory listing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[repr(u8)]
+pub enum FileKind {
+    File = 0,
+    Dir = 1,
+    Symlink = 2,
+}
+
+/// One entry of a directory listing (`FileOp::List`).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FileEntry {
+    /// Entry name (single component, no separators).
+    pub name: String,
+    pub kind: FileKind,
+    pub size: u64,
     pub mode: u32,
 }
 
@@ -485,6 +514,7 @@ pub enum Message {
     ForwardResponse(ForwardResponse),
     FileRequest(FileRequest),
     FileResponse(FileResponse),
+    FileEntry(FileEntry),
 }
 
 impl Message {
@@ -526,6 +556,7 @@ impl Message {
             ForwardResponse(_) => FrameType::ForwardResponse,
             FileRequest(_) => FrameType::FileRequest,
             FileResponse(_) => FrameType::FileResponse,
+            FileEntry(_) => FrameType::FileEntry,
         }
     }
 
@@ -600,6 +631,7 @@ impl Message {
             ForwardResponse(m) => postcard::to_allocvec(m)?,
             FileRequest(m) => postcard::to_allocvec(m)?,
             FileResponse(m) => postcard::to_allocvec(m)?,
+            FileEntry(m) => postcard::to_allocvec(m)?,
         };
         Ok(body)
     }
@@ -644,6 +676,7 @@ impl Message {
             ForwardResponse => Message::ForwardResponse(postcard::from_bytes(bytes)?),
             FileRequest => Message::FileRequest(postcard::from_bytes(bytes)?),
             FileResponse => Message::FileResponse(postcard::from_bytes(bytes)?),
+            FileEntry => Message::FileEntry(postcard::from_bytes(bytes)?),
         })
     }
 }

@@ -215,6 +215,14 @@ pub fn write_private(path: &Path, contents: &[u8]) -> Result<(), CryptoError> {
         opts.mode(0o600);
     }
     let mut file = opts.open(path)?;
+    // `OpenOptions::mode` only applies when the file is created. If it already
+    // exists with looser permissions (for example after `rmp init --force`),
+    // tighten it before writing the secret.
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        file.set_permissions(std::fs::Permissions::from_mode(0o600))?;
+    }
     file.write_all(contents)?;
     file.sync_all()?;
     Ok(())
@@ -251,5 +259,22 @@ mod tests {
         let a = HostKey::generate().unwrap().fingerprint();
         let b = HostKey::generate().unwrap().fingerprint();
         assert_ne!(a, b);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn write_private_fixes_existing_permissions() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("secret.bin");
+        std::fs::write(&path, b"old").unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).unwrap();
+
+        write_private(&path, b"new").unwrap();
+
+        let mode = std::fs::metadata(&path).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o600, "existing secret must be tightened to 0600");
+        assert_eq!(std::fs::read(&path).unwrap(), b"new");
     }
 }
