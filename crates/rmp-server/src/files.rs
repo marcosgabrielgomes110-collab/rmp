@@ -355,13 +355,7 @@ where
     // where it is readable with the default mode.
     apply_mode(&tmp, mode);
 
-    // `rename` replaces atomically on Unix; Windows requires removing the old
-    // destination first.
-    #[cfg(windows)]
-    {
-        let _ = fs::remove_file(path).await;
-    }
-    if let Err(e) = fs::rename(&tmp, path).await {
+    if let Err(e) = rename_replace(&tmp, path).await {
         report_put_failure(send, &tmp, peer, path, &e.to_string(), total).await;
         return Ok(());
     }
@@ -377,6 +371,15 @@ where
 
     audit!(event = "file.put", peer = %peer, path = %path.display(), size = total);
     Ok(())
+}
+
+/// Rename `from` over `to`, replacing the destination if the platform requires.
+async fn rename_replace(from: &Path, to: &Path) -> std::io::Result<()> {
+    if fs::rename(from, to).await.is_ok() {
+        return Ok(());
+    }
+    let _ = fs::remove_file(to).await;
+    fs::rename(from, to).await
 }
 
 async fn refuse<S>(send: &mut S, reason: &str) -> Result<()>

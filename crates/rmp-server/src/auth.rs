@@ -246,32 +246,35 @@ async fn authenticate_password(
 ) -> Result<Option<Authed>> {
     let ip = peer.ip();
     let AuthStart { username, initial } = start;
-    audit!(event = "auth.attempt", peer = %peer, user = %username, method = "password");
 
     // - the configured user → its password file (unless password auth is off);
     // - `root` → the root password file (only when allow_root is enabled);
     // - anything else → no file: OPAQUE still answers indistinguishably.
+    // Files are re-read per attempt so `rmp passwd` is effective immediately.
     // `root` is checked first and never shares the normal account's password
     // file, even if a misconfiguration made `server.username = "root"`.
-    let (file, principal) = if username == "root" {
+    let (file, principal, account_exists) = if username == "root" {
         if opts.allow_root {
-            (opts.root_password_file.as_ref(), Principal::Root)
+            (opts.current_root_password_file(), Principal::Root, true)
         } else {
-            (None, Principal::User)
+            (None, Principal::User, false)
         }
     } else if username == opts.username {
         let file = if opts.password_enabled {
-            Some(&opts.password_file)
+            opts.current_password_file()
         } else {
             None
         };
-        (file, Principal::User)
+        (file, Principal::User, true)
     } else {
-        (None, Principal::User)
+        (None, Principal::User, false)
     };
 
+    audit!(event = "auth.attempt", peer = %peer, user = %username, method = "password",
+           account_exists = account_exists);
+
     let (response, state) =
-        crypto::password::server_start(&opts.opaque_setup, file, &initial, &username)?;
+        crypto::password::server_start(&opts.opaque_setup, file.as_ref(), &initial, &username)?;
     rmp_proto::write_message(
         send,
         &Message::AuthResponse(rmp_proto::AuthResponse { payload: response }),
@@ -282,7 +285,8 @@ async fn authenticate_password(
         Ok(msg) => msg,
         Err(_) => {
             limiter.record_failure(ip, &username);
-            audit!(event = "auth.failure", peer = %peer, user = %username, method = "password", reason = "aborted");
+            audit!(event = "auth.failure", peer = %peer, user = %username, method = "password",
+                   reason = "aborted", account_exists = account_exists);
             return Ok(None);
         }
     };
@@ -294,7 +298,8 @@ async fn authenticate_password(
         other => {
             limiter.record_failure(ip, &username);
             audit!(event = "auth.failure", peer = %peer, user = %username, method = "password",
-                   reason = "unexpected_message", got = %format!("{:?}", other.frame_type()));
+                   reason = "unexpected_message", got = %format!("{:?}", other.frame_type()),
+                   account_exists = account_exists);
             write_result(send, false, AuthReason::InvalidCredentials, false).await?;
             return Ok(None);
         }
@@ -322,6 +327,8 @@ async fn authenticate_password(
             tracing::warn!(%peer, user = %username, error = %e, "password authentication failed");
             limiter.record_failure(ip, &username);
             let reason = lockout_reason(limiter, ip, peer, &username);
+            audit!(event = "auth.failure", peer = %peer, user = %username, method = "password",
+                   reason = "invalid_credentials", account_exists = account_exists);
             write_result(send, false, reason, false).await?;
             Ok(None)
         }

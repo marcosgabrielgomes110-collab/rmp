@@ -15,6 +15,7 @@ pub async fn run(
     target: &str,
     layout: &Layout,
     accept_new_flag: bool,
+    update_host_key: bool,
     fingerprint: Option<&str>,
     idle_override: Option<u64>,
     forwards: Vec<String>,
@@ -41,6 +42,7 @@ pub async fn run(
         &config,
         &target,
         accept_new,
+        update_host_key,
         idle_secs,
         config.client.offer_enrollment,
         pinned,
@@ -208,13 +210,29 @@ fn parse_remote_forward(spec: &str) -> Result<(u16, String, u16)> {
     Ok((bind_port, host, host_port))
 }
 
-async fn session(client: Client, key: &str) -> Result<i32> {
+async fn session(mut client: Client, key: &str) -> Result<i32> {
     let term_name = std::env::var("TERM").unwrap_or_else(|_| "xterm-256color".to_string());
     let (cols, rows) = rmp_client::term::terminal_size();
     tracing::info!(target: AUDIT_TARGET, event = "session.start", host = %key, term = %term_name);
-    let code = client.interactive(&term_name, cols, rows).await?;
-    tracing::info!(target: AUDIT_TARGET, event = "session.end", host = %key, exit_code = code);
-    Ok(code as i32)
+    let result = client.interactive(&term_name, cols, rows).await;
+    let close_reason = client.connection().close_reason();
+    match &result {
+        Ok(code) => tracing::info!(
+            target: AUDIT_TARGET,
+            event = "session.end",
+            host = %key,
+            exit_code = code,
+            close_reason = ?close_reason
+        ),
+        Err(e) => tracing::warn!(
+            target: AUDIT_TARGET,
+            event = "session.error",
+            host = %key,
+            error = %e,
+            close_reason = ?close_reason
+        ),
+    }
+    result.map(|code| code as i32)
 }
 
 #[cfg(test)]

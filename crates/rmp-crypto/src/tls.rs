@@ -3,9 +3,10 @@
 //! * Only TLS 1.3 is allowed.
 //! * The default `aws-lc-rs` provider is used, with the hybrid post-quantum key
 //!   exchange (`X25519MLKEM768`) preferred when the peer supports it.
-//! * The client authenticates the server by **pinning the certificate
-//!   fingerprint** (trust-on-first-use). The handshake is aborted before any
-//!   credential is sent if the fingerprint does not match the expected one.
+//! * The verifier **records** the certificate fingerprint but does not pin it.
+//!   Pinning is enforced by the client immediately after the handshake and
+//!   before any credential is sent, which lets it explain a mismatch (old vs.
+//!   new fingerprint) instead of surfacing an opaque rustls error.
 
 use crate::error::CryptoError;
 use crate::hostkey::{Fingerprint, HostKey};
@@ -47,18 +48,14 @@ impl ObservedFingerprint {
     }
 }
 
-/// TLS 1.3-only client configuration that pins the server certificate.
+/// TLS 1.3-only client configuration that records the server certificate.
 ///
-/// * `expected = Some(fp)` — only `fp` is accepted; anything else aborts the
-///   handshake.
-/// * `expected = None` — trust-on-first-use: any certificate is accepted and the
-///   observed fingerprint is recorded in the returned [`ObservedFingerprint`].
-pub fn client_config(
-    expected: Option<Fingerprint>,
-) -> Result<(ClientConfig, ObservedFingerprint), CryptoError> {
+/// The certificate itself is self-signed, so it establishes no trust. The
+/// observed fingerprint is returned through [`ObservedFingerprint`] and must be
+/// compared against `known_hosts` by the caller *before* authentication.
+pub fn client_config() -> Result<(ClientConfig, ObservedFingerprint), CryptoError> {
     let observed = ObservedFingerprint(Arc::new(Mutex::new(None)));
     let verifier = TofuVerifier {
-        expected,
         observed: observed.clone(),
         algs: aws_lc_rs::default_provider().signature_verification_algorithms,
     };
@@ -74,7 +71,6 @@ pub fn client_config(
 
 #[derive(Debug)]
 struct TofuVerifier {
-    expected: Option<Fingerprint>,
     observed: ObservedFingerprint,
     algs: WebPkiSupportedAlgorithms,
 }
@@ -89,15 +85,6 @@ impl ServerCertVerifier for TofuVerifier {
         _now: UnixTime,
     ) -> Result<ServerCertVerified, rustls::Error> {
         let fp = Fingerprint::of_cert_der(end_entity.as_ref());
-
-        if let Some(expected) = self.expected {
-            if expected != fp {
-                return Err(rustls::Error::InvalidCertificate(
-                    rustls::CertificateError::ApplicationVerificationFailure,
-                ));
-            }
-        }
-
         *self.observed.0.lock().expect("fingerprint mutex poisoned") = Some(fp);
         Ok(ServerCertVerified::assertion())
     }
@@ -129,10 +116,9 @@ impl ServerCertVerifier for TofuVerifier {
 mod tests {
     use super::*;
 
-    fn make_verifier(expected: Option<Fingerprint>) -> (TofuVerifier, ObservedFingerprint) {
+    fn make_verifier() -> (TofuVerifier, ObservedFingerprint) {
         let observed = ObservedFingerprint(Arc::new(Mutex::new(None)));
         let v = TofuVerifier {
-            expected,
             observed: observed.clone(),
             algs: aws_lc_rs::default_provider().signature_verification_algorithms,
         };
@@ -152,38 +138,27 @@ mod tests {
     }
 
     #[test]
-    fn tofu_accepts_and_records_when_unknown() {
+    fn accepts_and_records_fingerprint() {
         let hk = HostKey::generate().unwrap();
-        let (v, observed) = make_verifier(None);
+        let (v, observed) = make_verifier();
         assert!(call_verify(&v, hk.cert_der()).is_ok());
         assert_eq!(observed.get(), Some(hk.fingerprint()));
     }
 
     #[test]
-    fn pin_accepts_matching_certificate() {
-        let hk = HostKey::generate().unwrap();
-        let (v, _observed) = make_verifier(Some(hk.fingerprint()));
-        assert!(call_verify(&v, hk.cert_der()).is_ok());
-    }
-
-    #[test]
-    fn pin_rejects_different_certificate() {
-        let hk = HostKey::generate().unwrap();
-        let other = HostKey::generate().unwrap();
-        let (v, _observed) = make_verifier(Some(other.fingerprint()));
-        assert!(matches!(
-            call_verify(&v, hk.cert_der()),
-            Err(rustls::Error::InvalidCertificate(
-                rustls::CertificateError::ApplicationVerificationFailure
-            ))
-        ));
+    fn records_the_last_presented_certificate() {
+        let first = HostKey::generate().unwrap();
+        let second = HostKey::generate().unwrap();
+        let (v, observed) = make_verifier();
+        assert!(call_verify(&v, first.cert_der()).is_ok());
+        assert!(call_verify(&v, second.cert_der()).is_ok());
+        assert_eq!(observed.get(), Some(second.fingerprint()));
     }
 
     #[test]
     fn configs_build() {
         let hk = HostKey::generate().unwrap();
         let _srv = server_config(&hk).unwrap();
-        let (_cli, _obs) = client_config(None).unwrap();
-        let (_cli2, _obs2) = client_config(Some(hk.fingerprint())).unwrap();
+        let (_cli, _obs) = client_config().unwrap();
     }
 }

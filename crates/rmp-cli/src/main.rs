@@ -97,6 +97,15 @@ enum Command {
         /// Also set a password for root and enable `auth.allow_root`.
         #[arg(long)]
         root: bool,
+        /// Overwrite existing state. The host key is preserved unless
+        /// `--new-host-key` is also given.
+        #[arg(long)]
+        force: bool,
+        /// Rotate the server host key (requires `--force` when state exists).
+        /// Every client will see a host key mismatch until it updates
+        /// `known_hosts`.
+        #[arg(long)]
+        new_host_key: bool,
         /// Read the password(s) from stdin instead of prompting (normal
         /// account first, then root when `--root` is used).
         #[arg(long)]
@@ -104,9 +113,6 @@ enum Command {
         /// Remove enrolled device keys (revoke passwordless logins).
         #[arg(long)]
         reset_keys: bool,
-        /// Overwrite existing state.
-        #[arg(long)]
-        force: bool,
     },
     /// Run the RMP server (daemon).
     Serve {
@@ -121,6 +127,10 @@ enum Command {
         /// Accept an unknown host key without prompting.
         #[arg(long)]
         accept_new: bool,
+        /// Update `known_hosts` when the server presents a changed host key.
+        /// Use only after verifying the new fingerprint out of band.
+        #[arg(long)]
+        update_host_key: bool,
         /// Pin the server to this SHA-256 fingerprint (hex) instead of using known_hosts.
         #[arg(long, value_name = "HEX")]
         fingerprint: Option<String>,
@@ -137,7 +147,7 @@ enum Command {
         #[arg(long)]
         idle_timeout: Option<u64>,
     },
-    /// Copy a file to/from a remote machine (`user@host:path`).
+    /// Copy a file or directory to/from a remote machine (`user@host:path`).
     Cp {
         /// Source: a local path or `user@host:path`.
         src: String,
@@ -149,6 +159,9 @@ enum Command {
         /// Accept an unknown host key without prompting.
         #[arg(long)]
         accept_new: bool,
+        /// Update `known_hosts` when the server presents a changed host key.
+        #[arg(long)]
+        update_host_key: bool,
         /// Pin the server to this SHA-256 fingerprint (hex) instead of using known_hosts.
         #[arg(long, value_name = "HEX")]
         fingerprint: Option<String>,
@@ -169,24 +182,28 @@ enum Command {
         /// Accept an unknown host key without prompting.
         #[arg(long)]
         accept_new: bool,
+        /// Update `known_hosts` when the server presents a changed host key.
+        #[arg(long)]
+        update_host_key: bool,
         /// Pin the server to this SHA-256 fingerprint (hex) instead of using known_hosts.
         #[arg(long, value_name = "HEX")]
         fingerprint: Option<String>,
     },
-    /// Inspect or edit the client's known_hosts file.
+    /// Show local diagnostics (config, keys, permissions, server status).
+    #[command(visible_alias = "status")]
+    Doctor,
+    /// Inspect or edit the client trust store (`known_hosts`).
     KnownHosts {
         #[command(subcommand)]
-        command: KnownHostsCommand,
+        action: cmd_known_hosts::Action,
     },
-    /// Inspect or revoke device keys enrolled on this server.
+    /// List or revoke server-side device keys (`authorized_keys`).
     Keys {
         #[command(subcommand)]
-        command: KeysCommand,
+        action: cmd_keys::Action,
     },
     /// Validate config.toml, CIDRs and limits without starting the server.
     ConfigCheck,
-    /// Check config and on-disk permissions for common problems.
-    Doctor,
     /// Set or replace the access password.
     Passwd {
         /// Account name (defaults to the one in the config).
@@ -222,28 +239,6 @@ enum Command {
     Helper,
 }
 
-#[derive(Subcommand)]
-enum KnownHostsCommand {
-    /// List host fingerprints.
-    List,
-    /// Remove a host from known_hosts.
-    Remove {
-        /// Host key as stored, e.g. `example.com:2222` or `[::1]:2222`.
-        host: String,
-    },
-}
-
-#[derive(Subcommand)]
-enum KeysCommand {
-    /// List authorized device keys.
-    List,
-    /// Revoke a device key by its SHA-256 fingerprint (hex).
-    Revoke {
-        /// Fingerprint shown by `rmp keys list`.
-        fingerprint: String,
-    },
-}
-
 fn main() -> Result<()> {
     let Cli { dirs, command } = Cli::parse();
 
@@ -252,9 +247,10 @@ fn main() -> Result<()> {
             user,
             listen,
             root,
+            force,
+            new_host_key,
             password_stdin,
             reset_keys,
-            force,
         } => {
             let layout = dirs.resolve()?;
             cmd_init::run(
@@ -263,6 +259,7 @@ fn main() -> Result<()> {
                 &listen,
                 force,
                 root,
+                new_host_key,
                 password_stdin,
                 reset_keys,
             )
@@ -277,6 +274,7 @@ fn main() -> Result<()> {
         Command::Connect {
             target,
             accept_new,
+            update_host_key,
             fingerprint,
             local_forward,
             remote_forward,
@@ -291,6 +289,7 @@ fn main() -> Result<()> {
                 &target,
                 &layout,
                 accept_new,
+                update_host_key,
                 fingerprint.as_deref(),
                 idle_timeout,
                 local_forward,
@@ -304,6 +303,7 @@ fn main() -> Result<()> {
             dst,
             port,
             accept_new,
+            update_host_key,
             fingerprint,
             progress,
             recursive,
@@ -318,6 +318,7 @@ fn main() -> Result<()> {
                 &layout,
                 port,
                 accept_new,
+                update_host_key,
                 fingerprint.as_deref(),
                 progress,
                 recursive,
@@ -328,6 +329,7 @@ fn main() -> Result<()> {
             target,
             command,
             accept_new,
+            update_host_key,
             fingerprint,
         } => {
             let layout = dirs.resolve()?;
@@ -339,31 +341,27 @@ fn main() -> Result<()> {
                 &command,
                 &layout,
                 accept_new,
+                update_host_key,
                 fingerprint.as_deref(),
             ))?;
             std::process::exit(code);
         }
-        Command::KnownHosts { command } => {
+        Command::Doctor => {
             let layout = dirs.resolve()?;
-            match command {
-                KnownHostsCommand::List => cmd_known_hosts::list(&layout),
-                KnownHostsCommand::Remove { host } => cmd_known_hosts::remove(&layout, &host),
-            }
+            let code = cmd_doctor::run(&layout)?;
+            std::process::exit(code);
         }
-        Command::Keys { command } => {
+        Command::KnownHosts { action } => {
             let layout = dirs.resolve()?;
-            match command {
-                KeysCommand::List => cmd_keys::list(&layout),
-                KeysCommand::Revoke { fingerprint } => cmd_keys::revoke(&layout, &fingerprint),
-            }
+            cmd_known_hosts::run(&layout, action)
+        }
+        Command::Keys { action } => {
+            let layout = dirs.resolve()?;
+            cmd_keys::run(&layout, action)
         }
         Command::ConfigCheck => {
             let layout = dirs.resolve()?;
             cmd_config::run(&layout)
-        }
-        Command::Doctor => {
-            let layout = dirs.resolve()?;
-            cmd_doctor::run(&layout)
         }
         Command::Passwd {
             user,

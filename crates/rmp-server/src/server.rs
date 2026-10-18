@@ -32,8 +32,13 @@ pub struct ServerOptions {
     pub opaque_setup: crypto::OpaqueSetup,
     /// Registration record for `username`.
     pub password_file: crypto::PasswordFile,
+    /// When set, re-read the user's registration record on every attempt, so
+    /// `rmp passwd` takes effect without restarting the daemon.
+    pub password_file_path: Option<PathBuf>,
     /// Optional registration record for the `root` account.
     pub root_password_file: Option<crypto::PasswordFile>,
+    /// Optional path to re-read the root registration record on every attempt.
+    pub root_password_file_path: Option<PathBuf>,
     /// Allow authenticating as `root` (requires the server to run as root).
     pub allow_root: bool,
     /// Master switch for password authentication.
@@ -116,7 +121,9 @@ impl ServerOptions {
             host_key,
             opaque_setup,
             password_file,
+            password_file_path: None,
             root_password_file: None,
+            root_password_file_path: None,
             allow_root: false,
             password_enabled: true,
             allow_key_auth: true,
@@ -154,6 +161,44 @@ impl ServerOptions {
             }
         }
         default_shell()
+    }
+
+    /// Load the current password registration for the configured user.
+    ///
+    /// Reading from disk on each attempt makes `rmp passwd` effective
+    /// immediately. Tests and library users can keep using the in-memory file
+    /// by leaving [`Self::password_file_path`] as `None`.
+    pub fn current_password_file(&self) -> Option<crypto::PasswordFile> {
+        self.load_password_file(self.password_file_path.as_deref())
+    }
+
+    /// Load the current root password registration, if configured.
+    pub fn current_root_password_file(&self) -> Option<crypto::PasswordFile> {
+        match &self.root_password_file_path {
+            Some(path) => match crypto::PasswordFile::load(path) {
+                Ok(file) => Some(file),
+                Err(e) => {
+                    warn!(path = %path.display(), error = %e,
+                          "could not reload the root password file; failing closed");
+                    None
+                }
+            },
+            None => self.root_password_file.clone(),
+        }
+    }
+
+    fn load_password_file(&self, path: Option<&std::path::Path>) -> Option<crypto::PasswordFile> {
+        match path {
+            Some(path) => match crypto::PasswordFile::load(path) {
+                Ok(file) => Some(file),
+                Err(e) => {
+                    warn!(path = %path.display(), error = %e,
+                          "could not reload the password file; failing closed");
+                    None
+                }
+            },
+            None => Some(self.password_file.clone()),
+        }
     }
 
     /// Fail fast on insecure or impossible configurations.
@@ -537,6 +582,9 @@ async fn handle_connection(
     }
     while tasks.join_next().await.is_some() {}
 
+    if let Some(reason) = conn.close_reason() {
+        tracing::info!(%peer, reason = %reason, "connection closed");
+    }
     audit!(event = "connection.close", peer = %peer);
     Ok(())
 }
@@ -777,6 +825,13 @@ async fn control_loop(
 ) -> Result<()> {
     while let Ok(msg) = rmp_proto::read_message(&mut recv).await {
         match msg {
+            Message::Ping(ping) => {
+                rmp_proto::write_message(
+                    &mut send,
+                    &Message::Pong(rmp_proto::Pong { nonce: ping.nonce }),
+                )
+                .await?;
+            }
             Message::RemoteForwardBind(req) => {
                 handle_remote_bind(&mut send, &opts, &conn, peer, req, principal).await?;
             }

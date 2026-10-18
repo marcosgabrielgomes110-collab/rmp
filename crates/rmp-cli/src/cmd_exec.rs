@@ -14,6 +14,7 @@ pub async fn run(
     command: &[String],
     layout: &Layout,
     accept_new_flag: bool,
+    update_host_key: bool,
     fingerprint: Option<&str>,
 ) -> Result<i32> {
     if command.is_empty() {
@@ -39,6 +40,7 @@ pub async fn run(
         &config,
         &target,
         accept_new,
+        update_host_key,
         config.client.idle_timeout_secs,
         false,
         pinned,

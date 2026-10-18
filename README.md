@@ -116,15 +116,61 @@ rmp init --system            # /etc/rmp, /var/lib/rmp, /var/log/rmp
 rmp init --root              # habilita login root (requer o serve rodando como root)
 rmp init --password-stdin    # lê a senha do stdin (automação; com --root lê duas linhas)
 rmp init --force --reset-keys # re-inicializa e revoga as chaves de dispositivo
-rmp passwd                   # troca a senha do usuário
+rmp init --user alice --force              # muda a conta; preserva a host key
+rmp init --user alice --force --new-host-key  # gira a host key também
+rmp passwd                   # troca a senha do usuário (vale no próximo login)
 rmp connect alice@host --accept-new
 rmp connect alice@host --fingerprint <hex-sha256>  # pinagem fora de banda
+rmp connect alice@host --update-host-key   # aceita uma host key alterada
 rmp exec alice@host -- uname -a                    # executa sem abrir shell
 rmp known-hosts list                               # fingerprints confiáveis
 rmp keys list                                      # chaves de dispositivo autorizadas
 rmp config-check                                   # valida config.toml
-rmp doctor                                         # valida config + permissões no disco
+rmp doctor                                         # diagnóstico local (alias: rmp status)
 ```
+
+`rmp doctor` (ou `rmp status`) verifica config, host key, arquivos de senha,
+permissões, `authorized_keys`, `known_hosts`, porta UDP, PID e o serviço systemd.
+Ele sai com código `1` se houver erro, o que é útil em scripts de suporte.
+
+O `known_hosts` também pode ser gerenciado sem editar o arquivo à mão:
+
+```sh
+rmp known-hosts list
+rmp known-hosts update host:2222 <fingerprint-hex>
+rmp known-hosts remove host:2222
+```
+
+As chaves de dispositivo autorizadas no servidor também têm CLI:
+
+```sh
+rmp keys list
+rmp keys revoke <fingerprint-ou-chave-publica-hex>
+```
+
+A revogação vale no próximo login (o servidor relê `authorized_keys` a cada
+tentativa) e é recusada se for a última chave com a autenticação por senha
+desligada.
+
+> **Conta RMP ≠ usuário do Linux.** O servidor aceita a conta definida em
+> `server.username` (mais `root`, se `allow_root = true`). `rmp connect mg@host`
+> não autentica por você ser `mg` no Linux; use o nome configurado no servidor.
+
+### Identidade do servidor (host key)
+
+A host key Ed25519 é a identidade permanente do servidor. Reexecutar `rmp init`
+com `--force` **preserva** a chave por padrão, então os `known_hosts` dos clientes
+continuam válidos. A rotação só acontece com `--new-host-key` e é avisada no
+terminal. Se a chave mudar, o cliente aborta com `HOST KEY MISMATCH` mostrando as
+duas fingerprints; depois de verificar a nova fingerprint por um canal confiável,
+use `--update-host-key` para atualizar o `known_hosts`.
+
+O `rmp init` também se recusa a sobrescrever o estado enquanto um `rmp serve`
+está rodando (detectado por PID file e pela porta UDP) e, ao trocar de conta,
+move as chaves de dispositivo antigas para `authorized_keys.bak`. Em um
+re-init, o `config.toml` existente é **editado no lugar**: comentários e opções
+customizadas são preservados, e só `server.username`, `server.listen` e
+`auth.allow_root` mudam.
 
 ### Port forwarding
 
@@ -264,7 +310,10 @@ systemctl status rmp                # estado
 journalctl -u rmp -f                # logs
 ```
 A unit roda como o usuário que chamou (`SUDO_USER`), usa o binário em execução por padrão e
-`Restart=on-failure`. macOS (launchd) e Windows (SCM) ainda não são suportados.
+`Restart=on-failure`. `rmp serve` é um processo de primeiro plano: fechar a sessão SSH
+derruba uma instância iniciada manualmente (embora `SIGHUP` seja ignorado), por isso use
+o serviço systemd ou `tmux`. `SIGINT` e `SIGTERM` encerram de forma limpa.
+macOS (launchd) e Windows (SCM) ainda não são suportados.
 
 ## Licença
 

@@ -31,7 +31,7 @@ pub struct Server {
     pub enabled: bool,
     /// Address to listen on.
     pub listen: String,
-    /// Account name accepted for password authentication.
+    /// Account name accepted for password authentication (not a Linux user).
     pub username: String,
     /// Login shell ("" = `$SHELL` or the platform default).
     pub shell: String,
@@ -290,7 +290,7 @@ pub fn template(username: &str, listen: &str, allow_root: bool) -> String {
 enabled = true
 # Address and UDP port to listen on.
 listen = "{listen}"
-# Account name accepted for remote access.
+# Account name accepted for remote access (RMP account, not the Linux user).
 username = "{username}"
 # Login shell. "" = $SHELL, or /bin/sh (Linux) / cmd.exe (Windows).
 shell = ""

@@ -20,6 +20,7 @@ pub async fn run(
     layout: &Layout,
     port: u16,
     accept_new_flag: bool,
+    update_host_key_flag: bool,
     fingerprint: Option<&str>,
     show_progress: bool,
     recursive: bool,
@@ -39,7 +40,14 @@ pub async fn run(
     let target = authflow::parse_target(&remote, port)?;
 
     let client = authflow::connect_authenticated(
-        layout, &config, &target, accept_new, idle_secs, false, pinned,
+        layout,
+        &config,
+        &target,
+        accept_new,
+        update_host_key_flag,
+        idle_secs,
+        false,
+        pinned,
     )
     .await?;
 

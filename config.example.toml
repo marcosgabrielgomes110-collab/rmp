@@ -10,7 +10,7 @@
 enabled = true
 # Address and UDP port to listen on.
 listen = "0.0.0.0:2222"
-# Account name accepted for remote access.
+# Account name accepted for remote access (RMP account, not the Linux user).
 username = "alice"
 # Login shell. "" = $SHELL, or /bin/sh (Linux) / cmd.exe (Windows).
 shell = ""

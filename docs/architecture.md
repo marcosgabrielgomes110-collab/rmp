@@ -14,12 +14,13 @@
 - **Fácil de usar:** setup pede uma senha; conectar é `rmp connect user@host`.
 - **Multiplataforma:** servidor e cliente em Linux, macOS e Windows.
 
-### Não-objetivos (no MVP)
+### Não-objetivos (nesta versão)
 
 - Relays / NAT traversal / hole punching (o design deixa gancho, mas não implementa).
-- SFTP, agent/X11 forwarding, SSO e multi-usuário (single-account por servidor).
-- Resumption 0-RTT de sessões de aplicação (o transporte QUIC pode retomar TLS, mas o RMP
-  não aceita dados 0-RTT nem reata sessões).
+- SFTP (há transferência de arquivos própria via `rmp cp`, inclusive recursiva).
+- Agent/X11 forwarding, SSO e multi-usuário (single-account por servidor).
+- Reconexão automática / resumption 0-RTT de sessões (as mensagens e capacidades
+  existem, mas a retomada ainda não está implementada).
 
 ## 2. Pilha de protocolo
 
@@ -124,11 +125,13 @@ e o enrollment podem ser desligados (`[auth] allow_key_auth`, `[auth] allow_key_
   Não há `ChannelOpen`: cada sessão é um stream QUIC próprio.
 - **Interação:** `Data` trafega bytes do PTY nos dois sentidos; `WindowChange` envia
   resize; `Signal` envia Ctrl-C e afins; `ExitStatus` encerra.
-- **Keepalive:** PING do QUIC (`keep_alive_interval`); o idle timeout configurável
-  detecta links mortos. `Ping`/`Pong` de aplicação são reservados e não usados.
-- **Reconexão:** não há reatamento de sessão de aplicação; uma queda encerra a sessão.
-- **Encerramento:** `Disconnect { reason }` é aceito no controle; o servidor faz cleanup
-  do PTY e do processo filho.
+- **Keepalive:** `Ping`/`Pong` periódicos no canal de controle durante sessões
+  interativas; o cliente encerra com erro se o servidor parar de responder. O idle
+  timeout do QUIC continua valendo como segunda camada.
+- **Reconexão:** não implementada nesta versão. `RESUME_0RTT` é apenas uma capacidade
+  reservada; a sessão é encerrada se o transporte cair.
+- **Encerramento:** `Disconnect { reason }` propaga motivo; o servidor faz cleanup do PTY
+  e do processo filho.
 
 ## 6. Cross-platform
 

@@ -144,10 +144,30 @@ async fn fingerprint_mismatch_aborts_handshake() {
     )
     .await
     .expect("no timeout");
+    let error = match result {
+        Ok(_) => panic!("a pinned fingerprint that does not match must abort"),
+        Err(error) => error,
+    };
+    let text = format!("{error:#}");
     assert!(
-        result.is_err(),
-        "a pinned fingerprint that does not match must abort"
+        text.contains("HOST KEY MISMATCH"),
+        "expected an actionable mismatch error, got: {text}"
     );
+}
+
+#[tokio::test]
+async fn control_ping_roundtrip() {
+    let h = start_server().await;
+    let opts = client_opts(&h, Some(h.fingerprint));
+    let mut client = Client::connect(&opts, USER, PASSWORD.as_bytes())
+        .await
+        .unwrap();
+
+    let nonce = tokio::time::timeout(Duration::from_secs(5), client.ping(4242))
+        .await
+        .expect("ping timeout")
+        .expect("ping");
+    assert_eq!(nonce, 4242);
 }
 
 #[tokio::test]
@@ -547,4 +567,58 @@ async fn remote_forward_listener_is_released_on_disconnect() {
         tokio::time::sleep(Duration::from_millis(50)).await;
     }
     panic!("port {bound} was not released after the client disconnected");
+}
+
+#[tokio::test]
+async fn password_change_is_reloaded_without_restart() {
+    let host_key = crypto::HostKey::generate().unwrap();
+    let fingerprint = host_key.fingerprint();
+    let setup = crypto::password::new_setup();
+    let setup_bytes = crypto::password::setup_to_bytes(&setup);
+    let old_file = crypto::password::enroll(PASSWORD.as_bytes(), USER, &setup).unwrap();
+
+    let dir = tempfile::tempdir().unwrap();
+    let password_path = dir.path().join("password_file.bin");
+    old_file.save(&password_path).unwrap();
+
+    #[cfg(unix)]
+    let shell = Some("/bin/sh".to_string());
+    #[cfg(not(unix))]
+    let shell = None;
+
+    let mut opts = ServerOptions::new(USER.to_string(), host_key, setup, old_file);
+    opts.shell = shell;
+    opts.password_file_path = Some(password_path.clone());
+    opts.authorized_keys_path = dir.path().join("authorized_keys");
+    opts.idle_timeout = Duration::from_secs(30);
+    opts.keep_alive = Duration::from_secs(5);
+
+    let endpoint = bind("127.0.0.1:0".parse().unwrap(), &opts).unwrap();
+    let addr = endpoint.local_addr().unwrap();
+    tokio::spawn(serve(endpoint, Arc::new(opts)));
+
+    let client_opts = ClientOptions {
+        server_addr: addr,
+        server_name: "rmp".to_string(),
+        idle_timeout: Duration::from_secs(30),
+        keep_alive: Duration::from_secs(5),
+        expected_fingerprint: Some(fingerprint),
+    };
+
+    // The new password is not valid yet.
+    assert!(Client::connect(&client_opts, USER, b"new-password")
+        .await
+        .is_err());
+
+    // Replace the registration record on disk; the running server must pick it
+    // up on the next login, without a restart.
+    let setup = crypto::password::setup_from_bytes(&setup_bytes).unwrap();
+    let new_file = crypto::password::enroll(b"new-password", USER, &setup).unwrap();
+    new_file.save(&password_path).unwrap();
+
+    let client = Client::connect(&client_opts, USER, b"new-password")
+        .await
+        .expect("new password should be accepted without restart");
+    let out = client.exec("echo reloaded").await.unwrap();
+    assert!(String::from_utf8_lossy(&out.data).contains("reloaded"));
 }

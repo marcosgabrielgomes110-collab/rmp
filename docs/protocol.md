@@ -211,11 +211,13 @@ stream é encerrada. Gate no servidor: `[server] allow_file_transfer`.
 
 - **Perda/congestionamento:** delegados ao QUIC (retransmissão, PTO, CUBIC/BBR). O
   protocolo de aplicação não trata perda.
-- **Idle timeout:** sem tráfego dentro de `idle_timeout` (incluindo os PINGs de keepalive),
-  a conexão é encerrada. Não há reatamento automático de sessão de aplicação.
-- **Resumption 0-RTT:** não implementado para sessões; a capability `RESUME_0RTT` é
-  reservada e ignorada.
-- **Connection migration:** suportada pelo QUIC; o RMP não mantém estado de retomada.
+- **Idle timeout:** sem tráfego dentro de `idle_timeout` (incluindo os PINGs de
+  keepalive), a conexão é encerrada. Não há reatamento automático de sessão de
+  aplicação.
+- **Resumption 0-RTT:** capacidade reservada (`RESUME_0RTT`), ainda **não implementada**.
+  Quando existir, ficará restrita a mensagens idempotentes para evitar replay.
+- **Connection migration:** fornecida pelo QUIC; a aplicação não guarda estado de
+  endereço e continua usando a mesma conexão.
 
 ## 8. Erros e códigos
 

@@ -101,11 +101,13 @@ fn identity_file(layout: &Layout, host: &str, port: u16, user: &str) -> PathBuf 
 }
 
 /// Connect, verify the host key and authenticate. Returns an authenticated client.
+#[allow(clippy::too_many_arguments)]
 pub async fn connect_authenticated(
     layout: &Layout,
     config: &FileConfig,
     target: &Target,
     accept_new: bool,
+    update_host_key: bool,
     idle_secs: u64,
     offer_enrollment: bool,
     pinned: Option<Fingerprint>,
@@ -131,9 +133,10 @@ pub async fn connect_authenticated(
         server_name: target.host.clone(),
         idle_timeout: Duration::from_secs(idle_secs),
         keep_alive: Duration::from_secs(15),
-        // An explicit --fingerprint always pins; otherwise use known_hosts
-        // when strict checking is enabled (TOFU when it is not).
-        expected_fingerprint: pinned.or(if strict { known.get(&key) } else { None }),
+        // An explicit --fingerprint is enforced by the TLS verifier. Other
+        // known_hosts checks happen after the handshake so a mismatch can be
+        // reported with both fingerprints and a clear recovery path.
+        expected_fingerprint: pinned,
     };
 
     let id_path = identity_file(layout, &target.host, target.port, &target.user);
@@ -162,6 +165,7 @@ pub async fn connect_authenticated(
             &key,
             strict,
             accept_new,
+            update_host_key,
             connect_timeout,
             pinned,
         )
@@ -187,6 +191,7 @@ pub async fn connect_authenticated(
         &key,
         strict,
         accept_new,
+        update_host_key,
         connect_timeout,
         pinned,
     )
@@ -210,7 +215,14 @@ pub async fn connect_authenticated(
     let client = tp
         .authenticate_password(&target.user, password.as_bytes(), enroll_public_key)
         .await
-        .context("authentication failed")?;
+        .with_context(|| {
+            format!(
+                "authentication failed for '{}'. RMP uses the account configured in \
+                 `server.username` on the server (not the Linux/OS username); check the \
+                 account name and password.",
+                target.user
+            )
+        })?;
 
     if client.key_enrolled() {
         if let Some(generated) = &new_key {
@@ -235,12 +247,14 @@ pub async fn connect_authenticated(
 }
 
 /// Establish the transport and verify the server fingerprint (TOFU/pinning).
+#[allow(clippy::too_many_arguments)]
 async fn establish(
     opts: &ClientOptions,
     known: &mut KnownHosts,
     key: &str,
     strict: bool,
     accept_new: bool,
+    update_host_key: bool,
     connect_timeout: Duration,
     pinned: Option<Fingerprint>,
 ) -> Result<Transport> {
@@ -264,17 +278,36 @@ async fn establish(
         Trust::Match => {
             tracing::info!(target: AUDIT_TARGET, event = "host.known", host = %key, fingerprint = %fingerprint);
         }
+        Trust::Mismatch { expected } if strict && update_host_key => {
+            tracing::warn!(target: AUDIT_TARGET, event = "host.mismatch_updated", host = %key,
+                expected = %expected, received = %fingerprint);
+            eprintln!(
+                "WARNING: host key changed for {key}:\n  old: {expected}\n  new: {fingerprint}\n\
+                 Updating known_hosts because --update-host-key was given."
+            );
+            known.insert(key, fingerprint);
+            known.save().context("saving known_hosts")?;
+        }
         Trust::Mismatch { expected } if strict => {
             tracing::warn!(target: AUDIT_TARGET, event = "host.mismatch", host = %key,
                 expected = %expected, received = %fingerprint);
+            let path = known
+                .path()
+                .map(|p| p.display().to_string())
+                .unwrap_or_else(|| "known_hosts".to_string());
             bail!(
-                "HOST KEY MISMATCH for {key}!\n  expected: {expected}\n  received: {fingerprint}\n\
-                 This may indicate a man-in-the-middle attack. Connection aborted."
+                "HOST KEY MISMATCH for {key}!\n  expected: {expected}\n  received: {fingerprint}\n  file: {path}\n\
+                 This may indicate a man-in-the-middle attack. Connection aborted.\n\
+                 If the server host key was changed intentionally, re-run with \
+                 --update-host-key (or remove the entry from the file above)."
             );
         }
-        Trust::Mismatch { .. } => {
+        Trust::Mismatch { expected } => {
             tracing::warn!(target: AUDIT_TARGET, event = "host.mismatch_ignored", host = %key);
-            eprintln!("WARNING: host key changed for {key} and strict_host_key is disabled.");
+            eprintln!(
+                "WARNING: host key changed for {key} (old {expected}, new {fingerprint}) \
+                 and strict_host_key is disabled."
+            );
             known.insert(key, fingerprint);
             known.save().context("saving known_hosts")?;
         }

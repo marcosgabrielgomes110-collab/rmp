@@ -11,20 +11,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **`rmp exec user@host -- command`**: non-interactive remote execution with the
   remote exit status and stdout forwarded.
-- **`rmp known-hosts list|remove`** and **`rmp keys list|revoke`**: inspect/remove
-  TOFU entries and revoke enrolled device keys.
-- **`--fingerprint <hex>`** on `connect`, `cp` and `exec` for out-of-band host key
-  pinning (no TOFU prompt and no `known_hosts` update).
-- **`--password-stdin`** for `rmp init`/`rmp passwd` (normal account first, then
-  root when `--root` is used) and **`--reset-keys`** for `rmp init`.
-- **`rmp config-check`**: validates TOML, unknown keys, CIDRs, listen address and
-  limits without starting the server.
 - **`rmp cp -r/--recursive`**: upload/download directory trees (nested directories,
   empty directories, Unix modes). Symlinks and special files are skipped.
 - **`rmp cp --progress`** and **`[logging] format = "json"`** (structured file
   logs; console output remains text).
-- **`rmp doctor`**: checks config, directory/file permissions, required secrets and
-  `runuser` availability.
+- **`rmp known-hosts list|update|remove`** and **`rmp keys list|revoke`**: inspect
+  and edit the TOFU store and revoke enrolled device keys. Revocation applies to
+  the next login; the last key is protected when password auth is disabled.
+- **`rmp doctor` (alias `rmp status`)** and **`rmp config-check`**: local
+  diagnostics for config, secrets, permissions, trust store, UDP listener, PID
+  file and systemd, plus a no-start config validator.
+- **`--fingerprint <hex>`** on `connect`, `cp` and `exec` for out-of-band host key
+  pinning; **`--update-host-key`** for a deliberate fingerprint change;
+  **`--password-stdin`** and **`--reset-keys`**.
+- **`rmp init --new-host-key`**: rotate the server host key explicitly. Without
+  it, `rmp init --force` preserves the existing key.
+- Application-level `Ping`/`Pong` keepalive on the control stream during
+  interactive sessions, with detection of a link that stops answering.
+- A PID file and a clear "already running / address in use" error; `rmp init`
+  refuses to overwrite state while a server is running.
 - Directory overrides (`--dir`, `--system`, `--config-dir`, …) are now global and
   can appear before or after the subcommand.
 
@@ -54,6 +59,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `FileEntry` message (0x62) support recursive `rmp cp`. Version 4 had added the
   expected size to `FileRequest` for `Put`; the server rejects a size mismatch
   (`ExitStatus{1}`) and discards the temporary file.
+- `rmp init` merges an existing `config.toml` instead of overwriting it with the
+  template. Comments and custom settings are preserved; invalid TOML aborts
+  before any host key/password state is replaced.
+- Host-key pinning is enforced after the TLS handshake and before authentication,
+  so a mismatch reports both fingerprints and a recovery path.
+- Password files are re-read on every login, so `rmp passwd` takes effect
+  without restarting `rmp serve`.
+- `rmp passwd --user` must match `server.username`; renaming the account is done
+  with `rmp init --user ... --force` (host key preserved). When the account name
+  changes, old device keys are moved to `authorized_keys.bak`.
 
 ### Fixed
 
@@ -69,7 +84,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   a fast producer cannot grow memory without limit.
 - Forwarded TCP streams wait for both directions, preserving half-closes.
 - `rmp connect -L/-R` accepts bracketed IPv6 addresses (`8080:[::1]:80`).
-- `rmp serve` handles `SIGTERM` (e.g. `systemctl stop`) and logs `server.stop`.
+- `rmp serve` handles `SIGTERM` (e.g. `systemctl stop`), ignores `SIGHUP` and logs
+  the shutdown reason.
 - Log files have retention (14 days for `rmp.log`, 30 for `audit.log`), are kept
   in a `0700` directory, and an invalid `logging.level` no longer panics.
 - **Rate limiting is per `(user, network)`** and, with a higher threshold, per
@@ -81,6 +97,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `RestrictAddressFamilies` and `LimitNOFILE`.
 - Releases publish `SHA256SUMS`; `scripts/update.sh` verifies the downloaded
   archive before running it.
+- Server connection close reasons are logged.
 
 ### Planned
 

@@ -31,6 +31,8 @@ pub const AUTHORIZED_KEYS_FILE: &str = "authorized_keys";
 pub const IDENTITIES_DIR: &str = "identities";
 pub const LOG_FILE: &str = "rmp.log";
 pub const AUDIT_FILE: &str = "audit.log";
+/// PID of the running `rmp serve` process (runtime state).
+pub const PID_FILE: &str = "rmp.pid";
 
 /// The three directories RMP uses.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -129,6 +131,9 @@ impl Layout {
     }
     pub fn audit_file(&self) -> PathBuf {
         self.state_dir.join(AUDIT_FILE)
+    }
+    pub fn pid_file(&self) -> PathBuf {
+        self.state_dir.join(PID_FILE)
     }
 
     /// Create the configuration directory (mode `0700` on Unix).
