@@ -119,7 +119,12 @@ rmp connect alice@host --accept-new
 rmp connect alice@host --update-host-key   # aceita uma host key alterada
 rmp init --user alice --force              # muda a conta; preserva a host key
 rmp init --user alice --force --new-host-key  # gira a host key também
+rmp doctor                                 # diagnóstico local (alias: rmp status)
 ```
+
+`rmp doctor` (ou `rmp status`) verifica config, host key, arquivos de senha,
+permissões, `authorized_keys`, `known_hosts`, porta UDP, PID e o serviço systemd.
+Ele sai com código `1` se houver erro, o que é útil em scripts de suporte.
 
 > **Conta RMP ≠ usuário do Linux.** O servidor aceita a conta definida em
 > `server.username` (mais `root`, se `allow_root = true`). `rmp connect mg@host`

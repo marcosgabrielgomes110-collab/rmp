@@ -14,6 +14,7 @@
 mod authflow;
 mod cmd_connect;
 mod cmd_cp;
+mod cmd_doctor;
 mod cmd_init;
 mod cmd_passwd;
 mod cmd_serve;
@@ -153,6 +154,12 @@ enum Command {
         #[arg(long)]
         update_host_key: bool,
     },
+    /// Show local diagnostics (config, keys, permissions, server status).
+    #[command(visible_alias = "status")]
+    Doctor {
+        #[command(flatten)]
+        dirs: DirArgs,
+    },
     /// Set or replace the access password.
     Passwd {
         #[command(flatten)]
@@ -251,6 +258,11 @@ fn main() -> Result<()> {
                 accept_new,
                 update_host_key,
             ))?;
+            std::process::exit(code);
+        }
+        Command::Doctor { dirs } => {
+            let layout = dirs.resolve()?;
+            let code = cmd_doctor::run(&layout)?;
             std::process::exit(code);
         }
         Command::Passwd { dirs, user, root } => {

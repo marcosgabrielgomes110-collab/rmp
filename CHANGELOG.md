@@ -9,6 +9,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `rmp doctor` (alias `rmp status`): local diagnostics for config, host key,
+  password files, permissions, `authorized_keys`, `known_hosts`, UDP listener,
+  PID file and the systemd service. Exits non-zero when it finds errors.
 - `rmp connect` / `rmp cp --update-host-key`: deliberately update a changed
   server fingerprint in `known_hosts` after showing the old and new values.
 - `rmp init --new-host-key`: rotate the server host key explicitly. Without it,
