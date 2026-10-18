@@ -7,12 +7,12 @@ use rmp_crypto::{self as crypto, DeviceKey, Fingerprint, ObservedFingerprint};
 use rmp_proto::{
     key_auth_context, AuthFinish, AuthResponse, AuthResult, AuthStart, Data, Exec, ExitStatus,
     FileOp, FileRequest, Hello, HelloAck, KeyAuthChallenge, KeyAuthProof, KeyAuthRequest, Message,
-    PtyRequest, RemoteForwardBind, WindowChange,
+    Ping, Pong, PtyRequest, RemoteForwardBind, WindowChange,
 };
 use std::net::SocketAddr;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tracing::info;
 
@@ -29,11 +29,10 @@ pub struct ClientOptions {
 
 /// Build the QUIC client configuration.
 pub fn quic_client_config(
-    expected: Option<Fingerprint>,
     idle_timeout: Duration,
     keep_alive: Duration,
 ) -> Result<(quinn::ClientConfig, ObservedFingerprint)> {
-    let (tls, observed) = crypto::client_config(expected)?;
+    let (tls, observed) = crypto::client_config()?;
     let quic_crypto =
         quinn::crypto::rustls::QuicClientConfig::try_from(tls).context("QUIC client TLS")?;
     let mut config = quinn::ClientConfig::new(Arc::new(quic_crypto));
@@ -55,11 +54,7 @@ pub async fn transport(opts: &ClientOptions) -> Result<Transport> {
         "[::]:0".parse().unwrap()
     };
     let mut endpoint = Endpoint::client(bind).context("creating client endpoint")?;
-    let (config, observed) = quic_client_config(
-        opts.expected_fingerprint,
-        opts.idle_timeout,
-        opts.keep_alive,
-    )?;
+    let (config, observed) = quic_client_config(opts.idle_timeout, opts.keep_alive)?;
     endpoint.set_default_client_config(config);
 
     let conn = endpoint
@@ -67,6 +62,24 @@ pub async fn transport(opts: &ClientOptions) -> Result<Transport> {
         .context("initiating QUIC connection")?
         .await
         .context("QUIC/TLS handshake")?;
+
+    // Pin the certificate *after* the handshake and *before* returning the
+    // transport. No credential is sent before this check, so a changed host key
+    // is still a hard failure — but now with an actionable message.
+    if let Some(expected) = opts.expected_fingerprint {
+        let actual = observed
+            .get()
+            .context("server did not present a certificate")?;
+        if actual != expected {
+            bail!(
+                "HOST KEY MISMATCH for {}!\n  expected: {expected}\n  received: {actual}\n\
+                 This may indicate a man-in-the-middle attack. Connection aborted.\n\
+                 If the server host key was changed intentionally, update the \
+                 `known_hosts` entry (or use --update-host-key).",
+                opts.server_name
+            );
+        }
+    }
 
     info!(addr = %conn.remote_address(), "transport established");
     Ok(Transport {
@@ -311,6 +324,33 @@ impl Client {
         }
     }
 
+    /// Send a control-stream `Ping` and wait for the matching `Pong`.
+    ///
+    /// This is also used by integration tests to verify the server's
+    /// application-level keepalive handling.
+    pub async fn ping(&mut self, nonce: u64) -> Result<u64> {
+        rmp_proto::write_message(&mut self.ctrl_send, &Message::Ping(Ping { nonce }))
+            .await
+            .context("sending Ping")?;
+        loop {
+            match rmp_proto::read_message(&mut self.ctrl_recv).await {
+                Ok(Message::Pong(Pong { nonce })) => return Ok(nonce),
+                Ok(Message::Ping(Ping { nonce })) => {
+                    let _ = rmp_proto::write_message(
+                        &mut self.ctrl_send,
+                        &Message::Pong(Pong { nonce }),
+                    )
+                    .await;
+                }
+                Ok(_) => {}
+                Err(rmp_proto::StreamError::Closed) => {
+                    bail!("control stream closed before Pong")
+                }
+                Err(e) => return Err(e).context("reading Pong"),
+            }
+        }
+    }
+
     /// Run a command and collect all output.
     pub async fn exec(&self, command: &str) -> Result<ExecOutput> {
         let (mut send, mut recv) = self.conn.open_bi().await.context("opening session")?;
@@ -331,7 +371,7 @@ impl Client {
                     return Ok(ExecOutput { data, exit_code });
                 }
                 Err(rmp_proto::StreamError::Closed) => {
-                    return Ok(ExecOutput { data, exit_code: 0 });
+                    bail!("connection closed before the command reported an exit status");
                 }
                 Err(e) => return Err(e).context("reading exec output"),
                 Ok(_) => {}
@@ -371,7 +411,7 @@ impl Client {
                     return Ok(ExecOutput { data, exit_code });
                 }
                 Err(rmp_proto::StreamError::Closed) => {
-                    return Ok(ExecOutput { data, exit_code: 0 });
+                    bail!("connection closed before the shell reported an exit status");
                 }
                 Err(e) => return Err(e).context("reading pty output"),
                 Ok(_) => {}
@@ -380,7 +420,13 @@ impl Client {
     }
 
     /// Download `remote` to the local path `local`. Returns bytes written.
+    ///
+    /// The data is written to a sibling temporary file and only renamed into
+    /// place after the server sends `Eof`. A dropped connection therefore never
+    /// looks like a successful (truncated) download.
     pub async fn download(&self, remote: &str, local: impl AsRef<Path>) -> Result<u64> {
+        let local = local.as_ref();
+        let partial = partial_path(local);
         let (mut send, mut recv) = self.conn.open_bi().await.context("opening file stream")?;
         rmp_proto::write_message(
             &mut send,
@@ -400,24 +446,52 @@ impl Client {
             other => bail!("unexpected response: {:?}", other.frame_type()),
         };
 
-        let mut file = tokio::fs::File::create(local.as_ref())
+        let mut file = tokio::fs::File::create(&partial)
             .await
-            .with_context(|| format!("creating {}", local.as_ref().display()))?;
+            .with_context(|| format!("creating {}", partial.display()))?;
         let mut total = 0u64;
         loop {
             match rmp_proto::read_message(&mut recv).await {
                 Ok(Message::Data(d)) => {
-                    tokio::io::AsyncWriteExt::write_all(&mut file, &d.data).await?;
+                    if let Err(e) = tokio::io::AsyncWriteExt::write_all(&mut file, &d.data).await {
+                        drop(file);
+                        let _ = tokio::fs::remove_file(&partial).await;
+                        return Err(e).context("writing download");
+                    }
                     total += d.data.len() as u64;
                 }
-                Ok(Message::Eof) | Err(rmp_proto::StreamError::Closed) => break,
+                Ok(Message::Eof) => break,
                 Ok(_) => {}
-                Err(e) => return Err(e).context("reading file data"),
+                Err(rmp_proto::StreamError::Closed) => {
+                    drop(file);
+                    let _ = tokio::fs::remove_file(&partial).await;
+                    bail!(
+                        "connection closed before the download completed ({total} bytes received)"
+                    );
+                }
+                Err(e) => {
+                    drop(file);
+                    let _ = tokio::fs::remove_file(&partial).await;
+                    return Err(e).context("reading file data");
+                }
             }
         }
-        tokio::io::AsyncWriteExt::flush(&mut file).await?;
+        if let Err(e) = tokio::io::AsyncWriteExt::flush(&mut file).await {
+            drop(file);
+            let _ = tokio::fs::remove_file(&partial).await;
+            return Err(e).context("flushing download");
+        }
         drop(file);
-        apply_mode(local.as_ref(), mode);
+        apply_mode(&partial, mode);
+
+        if tokio::fs::rename(&partial, local).await.is_err() {
+            // On platforms where rename does not replace an existing file,
+            // remove the destination and retry once.
+            let _ = tokio::fs::remove_file(local).await;
+            tokio::fs::rename(&partial, local)
+                .await
+                .with_context(|| format!("moving download into {}", local.display()))?;
+        }
         Ok(total)
     }
 
@@ -463,16 +537,25 @@ impl Client {
         }
         rmp_proto::write_message(&mut send, &Message::Eof).await?;
 
-        match rmp_proto::read_message(&mut recv).await? {
-            Message::ExitStatus(s) if s.exit_code == 0 => {}
-            Message::ExitStatus(s) => bail!("remote reported error (exit {})", s.exit_code),
-            other => bail!("unexpected response: {:?}", other.frame_type()),
+        match rmp_proto::read_message(&mut recv).await {
+            Ok(Message::ExitStatus(s)) if s.exit_code == 0 => {}
+            Ok(Message::ExitStatus(s)) => bail!("remote reported error (exit {})", s.exit_code),
+            Ok(other) => bail!("unexpected response: {:?}", other.frame_type()),
+            Err(rmp_proto::StreamError::Closed) => {
+                bail!("connection closed before the server confirmed the upload")
+            }
+            Err(e) => return Err(e).context("reading upload confirmation"),
         }
         Ok(total)
     }
 
     /// Open an interactive PTY session bridged to the local terminal.
-    pub async fn interactive(&self, term_name: &str, cols: u16, rows: u16) -> Result<u32> {
+    ///
+    /// The control stream carries application-level `Ping`/`Pong` keepalives:
+    /// once the server has answered at least one `Ping`, a missing `Pong`
+    /// eventually aborts the session instead of silently treating the closed
+    /// stream as a clean exit.
+    pub async fn interactive(&mut self, term_name: &str, cols: u16, rows: u16) -> Result<u32> {
         let (mut send, mut recv) = self.conn.open_bi().await.context("opening session")?;
         rmp_proto::write_message(
             &mut send,
@@ -488,6 +571,12 @@ impl Client {
         .await?;
         rmp_proto::write_message(&mut send, &Message::Shell).await?;
 
+        const PING_INTERVAL: Duration = Duration::from_secs(15);
+        const PING_TIMEOUT: Duration = Duration::from_secs(45);
+
+        let ctrl_send = &mut self.ctrl_send;
+        let ctrl_recv = &mut self.ctrl_recv;
+
         // Best effort: if stdin is not a TTY we keep line mode.
         let _raw = term::RawMode::enable().ok();
         let mut stdout = tokio::io::stdout();
@@ -496,6 +585,10 @@ impl Client {
         let mut input_closed = false;
         let mut last_size = (cols, rows);
         let mut resize_tick = tokio::time::interval(Duration::from_millis(250));
+        let mut ping_tick = tokio::time::interval(PING_INTERVAL);
+        ping_tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+        let mut ping_nonce: u64 = 0;
+        let mut last_pong: Option<Instant> = None;
 
         loop {
             tokio::select! {
@@ -524,9 +617,30 @@ impl Client {
                             let _ = send.finish();
                             return Ok(exit_code);
                         }
-                        Err(rmp_proto::StreamError::Closed) => return Ok(0),
+                        Err(rmp_proto::StreamError::Closed) => {
+                            bail!("connection closed before the shell reported an exit status");
+                        }
                         Err(e) => return Err(e).context("interactive session"),
                         Ok(_) => {}
+                    }
+                }
+                ctrl = rmp_proto::read_message(ctrl_recv) => {
+                    match ctrl {
+                        Ok(Message::Ping(Ping { nonce })) => {
+                            let _ = rmp_proto::write_message(
+                                ctrl_send,
+                                &Message::Pong(Pong { nonce }),
+                            ).await;
+                        }
+                        Ok(Message::Pong(_)) => last_pong = Some(Instant::now()),
+                        Ok(Message::Disconnect(d)) => {
+                            bail!("server disconnected: {:?} ({})", d.reason, d.message);
+                        }
+                        Ok(_) => {}
+                        Err(rmp_proto::StreamError::Closed) => {
+                            bail!("control stream closed unexpectedly");
+                        }
+                        Err(e) => return Err(e).context("control stream"),
                     }
                 }
                 _ = resize_tick.tick() => {
@@ -544,9 +658,35 @@ impl Client {
                         ).await;
                     }
                 }
+                _ = ping_tick.tick() => {
+                    if let Some(last) = last_pong {
+                        if last.elapsed() > PING_TIMEOUT {
+                            bail!(
+                                "connection lost: no Pong from server in {}s",
+                                PING_TIMEOUT.as_secs()
+                            );
+                        }
+                    }
+                    ping_nonce = ping_nonce.wrapping_add(1);
+                    if let Err(e) = rmp_proto::write_message(
+                        ctrl_send,
+                        &Message::Ping(Ping { nonce: ping_nonce }),
+                    ).await {
+                        bail!("control stream closed while sending keepalive: {e}");
+                    }
+                }
             }
         }
     }
+}
+
+/// Sibling temporary path used while a download is in flight.
+fn partial_path(local: &Path) -> PathBuf {
+    let name = local
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("rmp-download");
+    local.with_file_name(format!(".{name}.rmp-part"))
 }
 
 /// Unix permission bits of a local file (0 elsewhere). Used to preserve the

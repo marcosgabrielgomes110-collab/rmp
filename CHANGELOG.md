@@ -7,6 +7,38 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `rmp connect` / `rmp cp --update-host-key`: deliberately update a changed
+  server fingerprint in `known_hosts` after showing the old and new values.
+- `rmp init --new-host-key`: rotate the server host key explicitly. Without it,
+  `rmp init --force` now preserves the existing key.
+- Application-level `Ping`/`Pong` keepalive on the control stream during
+  interactive sessions, with detection of a link that stops answering.
+- A PID file and a clear "already running / address in use" error; `rmp init`
+  refuses to overwrite state while a server is running.
+- Graceful `SIGTERM` handling (and `SIGHUP` ignored) for service managers.
+
+### Changed
+
+- Host-key pinning is now enforced after the TLS handshake and before
+  authentication, so a mismatch reports both fingerprints and a recovery path
+  instead of an opaque rustls `ApplicationVerificationFailure`.
+- Password files are re-read on every login, so `rmp passwd` takes effect
+  without restarting `rmp serve`.
+- `rmp passwd --user` must match `server.username`; renaming the account is done
+  with `rmp init --user ... --force` (host key preserved).
+- When the account name changes, old device keys are moved to
+  `authorized_keys.bak` instead of silently authenticating as the new account.
+
+### Fixed
+
+- Interrupted sessions/transfers are no longer reported as success:
+  `StreamError::Closed` without an `ExitStatus`/`Eof` returns an error.
+- Downloads and uploads write to a temporary file and rename on completion, so
+  a dropped connection does not leave a truncated destination marked as valid.
+- Server connection close reasons are logged.
+
 ### Planned
 
 - Fuzzing of the wire format and 0-RTT resumption.

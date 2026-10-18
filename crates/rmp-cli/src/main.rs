@@ -91,9 +91,15 @@ enum Command {
         /// Also set a password for root and enable `auth.allow_root`.
         #[arg(long)]
         root: bool,
-        /// Overwrite existing state.
+        /// Overwrite existing state. The host key is preserved unless
+        /// `--new-host-key` is also given.
         #[arg(long)]
         force: bool,
+        /// Rotate the server host key (requires `--force` when state exists).
+        /// Every client will see a host key mismatch until it updates
+        /// `known_hosts`.
+        #[arg(long)]
+        new_host_key: bool,
     },
     /// Run the RMP server (daemon).
     Serve {
@@ -112,6 +118,10 @@ enum Command {
         /// Accept an unknown host key without prompting.
         #[arg(long)]
         accept_new: bool,
+        /// Update `known_hosts` when the server presents a changed host key.
+        /// Use only after verifying the new fingerprint out of band.
+        #[arg(long)]
+        update_host_key: bool,
         /// Local forward: `[bind_address:]port:host:hostport` (repeatable).
         #[arg(short = 'L', long = "local-forward", value_name = "SPEC")]
         local_forward: Vec<String>,
@@ -139,6 +149,9 @@ enum Command {
         /// Accept an unknown host key without prompting.
         #[arg(long)]
         accept_new: bool,
+        /// Update `known_hosts` when the server presents a changed host key.
+        #[arg(long)]
+        update_host_key: bool,
     },
     /// Set or replace the access password.
     Passwd {
@@ -180,9 +193,10 @@ fn main() -> Result<()> {
             listen,
             root,
             force,
+            new_host_key,
         } => {
             let layout = dirs.resolve()?;
-            cmd_init::run(&layout, &user, &listen, force, root)
+            cmd_init::run(&layout, &user, &listen, force, root, new_host_key)
         }
         Command::Serve { dirs, listen } => {
             let layout = dirs.resolve()?;
@@ -195,6 +209,7 @@ fn main() -> Result<()> {
             target,
             dirs,
             accept_new,
+            update_host_key,
             local_forward,
             remote_forward,
             no_shell,
@@ -208,6 +223,7 @@ fn main() -> Result<()> {
                 &target,
                 &layout,
                 accept_new,
+                update_host_key,
                 idle_timeout,
                 local_forward,
                 remote_forward,
@@ -221,12 +237,20 @@ fn main() -> Result<()> {
             dirs,
             port,
             accept_new,
+            update_host_key,
         } => {
             let layout = dirs.resolve()?;
             let rt = tokio::runtime::Builder::new_multi_thread()
                 .enable_all()
                 .build()?;
-            let code = rt.block_on(cmd_cp::run(&src, &dst, &layout, port, accept_new))?;
+            let code = rt.block_on(cmd_cp::run(
+                &src,
+                &dst,
+                &layout,
+                port,
+                accept_new,
+                update_host_key,
+            ))?;
             std::process::exit(code);
         }
         Command::Passwd { dirs, user, root } => {

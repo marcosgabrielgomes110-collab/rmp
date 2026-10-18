@@ -68,6 +68,11 @@ impl KnownHosts {
         self.entries.get(host).copied()
     }
 
+    /// The file backing this store, when loaded from disk.
+    pub fn path(&self) -> Option<&Path> {
+        self.path.as_deref()
+    }
+
     /// Compare a presented fingerprint against the store.
     pub fn check(&self, host: &str, presented: Fingerprint) -> Trust {
         match self.entries.get(host) {

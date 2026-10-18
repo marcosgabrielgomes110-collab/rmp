@@ -205,18 +205,47 @@ fn base64_decode(input: &str) -> Option<Vec<u8>> {
 }
 
 /// Write a file containing secret material with restrictive permissions.
+///
+/// The contents are written to a sibling temporary file and renamed into place,
+/// so readers (for example a running server re-reading `password_file.bin`)
+/// never observe a truncated file.
 pub fn write_private(path: &Path, contents: &[u8]) -> Result<(), CryptoError> {
     use std::io::Write;
-    let mut opts = std::fs::OpenOptions::new();
-    opts.write(true).create(true).truncate(true);
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::OpenOptionsExt;
-        opts.mode(0o600);
+
+    let name = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("rmp-secret");
+    let tmp = path.with_file_name(format!(
+        ".{name}.tmp-{}-{:016x}",
+        std::process::id(),
+        rand::random::<u64>()
+    ));
+
+    let write = || -> Result<(), CryptoError> {
+        let mut opts = std::fs::OpenOptions::new();
+        opts.write(true).create(true).truncate(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            opts.mode(0o600);
+        }
+        let mut file = opts.open(&tmp)?;
+        file.write_all(contents)?;
+        file.sync_all()?;
+        Ok(())
+    };
+
+    if let Err(e) = write() {
+        let _ = std::fs::remove_file(&tmp);
+        return Err(e);
     }
-    let mut file = opts.open(path)?;
-    file.write_all(contents)?;
-    file.sync_all()?;
+
+    if std::fs::rename(&tmp, path).is_err() {
+        // On platforms where rename does not replace an existing file.
+        let _ = std::fs::remove_file(path);
+        std::fs::rename(&tmp, path)?;
+    }
     Ok(())
 }
 

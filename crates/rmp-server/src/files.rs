@@ -137,7 +137,11 @@ async fn put(
         }
     }
 
-    let mut file = match fs::File::create(path).await {
+    // Write to a sibling temporary file and rename only after the client sends
+    // `Eof`. An interrupted upload must not leave a truncated destination that
+    // looks like a successful copy.
+    let partial = partial_path(path);
+    let mut file = match fs::File::create(&partial).await {
         Ok(f) => f,
         Err(e) => return refuse(send, &e.to_string()).await,
     };
@@ -157,18 +161,44 @@ async fn put(
     loop {
         match rmp_proto::read_message(recv).await {
             Ok(Message::Data(d)) => {
-                file.write_all(&d.data).await?;
+                if let Err(e) = file.write_all(&d.data).await {
+                    drop(file);
+                    let _ = fs::remove_file(&partial).await;
+                    return Err(e).context("writing upload");
+                }
                 total += d.data.len() as u64;
             }
             Ok(Message::Eof) => break,
             Ok(_) => {}
-            Err(_) => break, // client closed the stream
+            Err(e) => {
+                drop(file);
+                let _ = fs::remove_file(&partial).await;
+                audit!(event = "file.put.aborted", peer = %peer, path = %path.display(),
+                       size = total, reason = %e);
+                return Err(e).context("upload interrupted before Eof");
+            }
         }
     }
-    file.flush().await?;
+    if let Err(e) = file.flush().await {
+        drop(file);
+        let _ = fs::remove_file(&partial).await;
+        return Err(e).context("flushing upload");
+    }
     drop(file);
 
-    apply_mode(path, mode);
+    apply_mode(&partial, mode);
+    if let Err(e) = rename_replace(&partial, path).await {
+        let _ = fs::remove_file(&partial).await;
+        let _ = rmp_proto::write_message(
+            send,
+            &Message::ExitStatus(ExitStatus {
+                exit_code: 1,
+                signal: None,
+            }),
+        )
+        .await;
+        return Err(e).context("moving upload into place");
+    }
 
     rmp_proto::write_message(
         send,
@@ -181,6 +211,24 @@ async fn put(
 
     audit!(event = "file.put", peer = %peer, path = %path.display(), size = total);
     Ok(())
+}
+
+/// Sibling temporary path used while an upload is in flight.
+fn partial_path(path: &Path) -> PathBuf {
+    let name = path
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("rmp-upload");
+    path.with_file_name(format!(".{name}.rmp-part"))
+}
+
+/// Rename `from` over `to`, replacing the destination if the platform requires.
+async fn rename_replace(from: &Path, to: &Path) -> std::io::Result<()> {
+    if fs::rename(from, to).await.is_ok() {
+        return Ok(());
+    }
+    let _ = fs::remove_file(to).await;
+    fs::rename(from, to).await
 }
 
 async fn refuse(send: &mut SendStream, reason: &str) -> Result<()> {

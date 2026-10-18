@@ -195,10 +195,10 @@ stream é encerrada. Gate no servidor: `[server] allow_file_transfer`.
   protocolo de aplicação não trata perda.
 - **Idle timeout:** sem `Pong` dentro de `idle_timeout`, a conexão é encerrada; o cliente
   tenta reatar.
-- **Resumption 0-RTT:** usado para retomar a sessão quando `RESUME_0RTT` foi negociado.
-  0-RTT é restrito a mensagens idempotentes para evitar replay; a primeira mensagem após
-  resumption não pode acionar efeitos irreversíveis.
-- **Connection migration:** trocar de rede preserva a sessão via Connection ID.
+- **Resumption 0-RTT:** capacidade reservada (`RESUME_0RTT`), ainda **não implementada**.
+  Quando existir, ficará restrita a mensagens idempotentes para evitar replay.
+- **Connection migration:** fornecida pelo QUIC; a aplicação não guarda estado de
+  endereço e continua usando a mesma conexão.
 
 ## 8. Erros e códigos
 

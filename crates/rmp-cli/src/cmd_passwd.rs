@@ -15,16 +15,20 @@ pub fn run(layout: &Layout, user: Option<String>, root: bool) -> Result<()> {
     let setup_bytes = std::fs::read(layout.opaque_setup_file()).context("reading OPAQUE setup")?;
     let setup = password::setup_from_bytes(&setup_bytes).context("parsing OPAQUE setup")?;
 
+    let config = crate::config::FileConfig::load_or_default(&layout.config_file())?;
+    let configured_user = config.server.username;
     let account = if root {
         "root".to_string()
     } else {
         match user {
-            Some(u) => u,
-            None => {
-                crate::config::FileConfig::load_or_default(&layout.config_file())?
-                    .server
-                    .username
-            }
+            Some(user) if user != configured_user => bail!(
+                "account '{user}' is not `server.username` ('{configured_user}').\n\
+                 RMP has a single configured account; to rename it run:\n\
+                 \n  rmp init --user {user} --force\n\n\
+                 (the host key is preserved unless --new-host-key is also given)."
+            ),
+            Some(user) => user,
+            None => configured_user,
         }
     };
 
@@ -41,6 +45,7 @@ pub fn run(layout: &Layout, user: Option<String>, root: bool) -> Result<()> {
     tracing::info!(target: AUDIT_TARGET, event = "password.changed", account = %account);
 
     println!("Password updated for '{account}'.");
+    println!("The running server re-reads the password file on the next login.");
     if root {
         println!("Ensure `[auth] allow_root = true` in the config to allow root logins.");
     }

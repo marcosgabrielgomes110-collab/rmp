@@ -16,6 +16,7 @@ pub async fn run(
     layout: &Layout,
     port: u16,
     accept_new_flag: bool,
+    update_host_key_flag: bool,
 ) -> Result<i32> {
     let _ = layout.ensure_config();
     let config = FileConfig::load_or_default(&layout.config_file()).unwrap_or_default();
@@ -26,9 +27,16 @@ pub async fn run(
     let (remote, remote_path, local_path, upload) = classify(src, dst)?;
     let target = authflow::parse_target(&remote, port)?;
 
-    let client =
-        authflow::connect_authenticated(layout, &config, &target, accept_new, idle_secs, false)
-            .await?;
+    let client = authflow::connect_authenticated(
+        layout,
+        &config,
+        &target,
+        accept_new,
+        update_host_key_flag,
+        idle_secs,
+        false,
+    )
+    .await?;
 
     if upload {
         let n = client.upload(&local_path, &remote_path).await?;

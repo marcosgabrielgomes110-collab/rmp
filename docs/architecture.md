@@ -14,10 +14,12 @@
 - **Fácil de usar:** setup pede uma senha; conectar é `rmp connect user@host`.
 - **Multiplataforma:** servidor e cliente em Linux, macOS e Windows.
 
-### Não-objetivos (no MVP)
+### Não-objetivos (nesta versão)
 
 - Relays / NAT traversal / hole punching (o design deixa gancho, mas não implementa).
-- SFTP e port forwarding (previstos, não no MVP).
+- SFTP (há transferência de arquivos própria via `rmp cp`).
+- Reconexão automática / resumption 0-RTT (as mensagens e capacidades existem,
+  mas a retomada de sessão ainda não está implementada).
 - Federação de identidade / SSO.
 
 ## 2. Pilha de protocolo
@@ -121,9 +123,11 @@ e o enrollment podem ser desligados (`[auth] allow_key_auth`, `[auth] allow_key_
 - **Abertura:** `ChannelOpen(type=session)` seguido de `PtyRequest` + `Shell` (ou `Exec`).
 - **Interação:** `Data` trafega bytes do PTY nos dois sentidos; `WindowChange` envia
   resize; `Signal` envia Ctrl-C e afins; `ExitStatus` encerra.
-- **Keepalive:** `Ping`/`Pong` periódicos; idle timeout configurável detecta links mortos.
-- **Reconexão:** resumption 0-RTT reata a sessão quando o transporte cai; 0-RTT só é usado
-  para operações idempotentes, prevenindo replay.
+- **Keepalive:** `Ping`/`Pong` periódicos no canal de controle durante sessões
+  interativas; o cliente encerra com erro se o servidor parar de responder. O idle
+  timeout do QUIC continua valendo como segunda camada.
+- **Reconexão:** não implementada nesta versão. `RESUME_0RTT` é apenas uma capacidade
+  reservada; a sessão é encerrada se o transporte cair.
 - **Encerramento:** `Disconnect { reason }` propaga motivo; o servidor faz cleanup do PTY
   e do processo filho.
 

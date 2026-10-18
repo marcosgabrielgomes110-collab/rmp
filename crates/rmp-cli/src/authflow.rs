@@ -99,11 +99,13 @@ fn identity_file(layout: &Layout, host: &str, port: u16, user: &str) -> PathBuf 
 }
 
 /// Connect, verify the host key and authenticate. Returns an authenticated client.
+#[allow(clippy::too_many_arguments)]
 pub async fn connect_authenticated(
     layout: &Layout,
     config: &FileConfig,
     target: &Target,
     accept_new: bool,
+    update_host_key: bool,
     idle_secs: u64,
     offer_enrollment: bool,
 ) -> Result<Client> {
@@ -128,8 +130,9 @@ pub async fn connect_authenticated(
         server_name: target.host.clone(),
         idle_timeout: Duration::from_secs(idle_secs),
         keep_alive: Duration::from_secs(15),
-        // When pinning is disabled we always connect in TOFU mode.
-        expected_fingerprint: if strict { known.get(&key) } else { None },
+        // Pinning is enforced below, after the handshake, so a mismatch can be
+        // reported with both fingerprints and a clear recovery path.
+        expected_fingerprint: None,
     };
 
     let id_path = identity_file(layout, &target.host, target.port, &target.user);
@@ -152,7 +155,16 @@ pub async fn connect_authenticated(
 
     // --- Attempt 1: device key (passwordless) ---------------------------------
     if let (Some(device_key), true) = (&device_key, config.client.enable_key_auth) {
-        let tp = establish(&opts, &mut known, &key, strict, accept_new, connect_timeout).await?;
+        let tp = establish(
+            &opts,
+            &mut known,
+            &key,
+            strict,
+            accept_new,
+            update_host_key,
+            connect_timeout,
+        )
+        .await?;
         match tp.authenticate_key(&target.user, device_key).await {
             Ok(client) => {
                 tracing::info!(target: AUDIT_TARGET, event = "auth.success", host = %key,
@@ -168,7 +180,16 @@ pub async fn connect_authenticated(
 
     // --- Attempt 2: password, possibly enrolling a new device key -------------
     // Connect and verify the server identity *before* prompting for anything.
-    let tp = establish(&opts, &mut known, &key, strict, accept_new, connect_timeout).await?;
+    let tp = establish(
+        &opts,
+        &mut known,
+        &key,
+        strict,
+        accept_new,
+        update_host_key,
+        connect_timeout,
+    )
+    .await?;
 
     let mut new_key: Option<DeviceKey> = None;
     let mut enroll_public_key: Option<Vec<u8>> = None;
@@ -187,7 +208,14 @@ pub async fn connect_authenticated(
     let client = tp
         .authenticate_password(&target.user, password.as_bytes(), enroll_public_key)
         .await
-        .context("authentication failed")?;
+        .with_context(|| {
+            format!(
+                "authentication failed for '{}'. RMP uses the account configured in \
+                 `server.username` on the server (not the Linux/OS username); check the \
+                 account name and password.",
+                target.user
+            )
+        })?;
 
     if client.key_enrolled() {
         if let Some(generated) = &new_key {
@@ -218,6 +246,7 @@ async fn establish(
     key: &str,
     strict: bool,
     accept_new: bool,
+    update_host_key: bool,
     connect_timeout: Duration,
 ) -> Result<Transport> {
     let tp = tokio::time::timeout(connect_timeout, transport(opts))
@@ -232,17 +261,36 @@ async fn establish(
         Trust::Match => {
             tracing::info!(target: AUDIT_TARGET, event = "host.known", host = %key, fingerprint = %fingerprint);
         }
+        Trust::Mismatch { expected } if strict && update_host_key => {
+            tracing::warn!(target: AUDIT_TARGET, event = "host.mismatch_updated", host = %key,
+                expected = %expected, received = %fingerprint);
+            eprintln!(
+                "WARNING: host key changed for {key}:\n  old: {expected}\n  new: {fingerprint}\n\
+                 Updating known_hosts because --update-host-key was given."
+            );
+            known.insert(key, fingerprint);
+            known.save().context("saving known_hosts")?;
+        }
         Trust::Mismatch { expected } if strict => {
             tracing::warn!(target: AUDIT_TARGET, event = "host.mismatch", host = %key,
                 expected = %expected, received = %fingerprint);
+            let path = known
+                .path()
+                .map(|p| p.display().to_string())
+                .unwrap_or_else(|| "known_hosts".to_string());
             bail!(
-                "HOST KEY MISMATCH for {key}!\n  expected: {expected}\n  received: {fingerprint}\n\
-                 This may indicate a man-in-the-middle attack. Connection aborted."
+                "HOST KEY MISMATCH for {key}!\n  expected: {expected}\n  received: {fingerprint}\n  file: {path}\n\
+                 This may indicate a man-in-the-middle attack. Connection aborted.\n\
+                 If the server host key was changed intentionally, re-run with \
+                 --update-host-key (or remove the entry from the file above)."
             );
         }
-        Trust::Mismatch { .. } => {
+        Trust::Mismatch { expected } => {
             tracing::warn!(target: AUDIT_TARGET, event = "host.mismatch_ignored", host = %key);
-            eprintln!("WARNING: host key changed for {key} and strict_host_key is disabled.");
+            eprintln!(
+                "WARNING: host key changed for {key} (old {expected}, new {fingerprint}) \
+                 and strict_host_key is disabled."
+            );
             known.insert(key, fingerprint);
             known.save().context("saving known_hosts")?;
         }
